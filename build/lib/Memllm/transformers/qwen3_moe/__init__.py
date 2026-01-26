@@ -1,4 +1,4 @@
-# Copyright 2024 The Qwen Team and The HuggingFace Inc. team. All rights reserved.
+# Copyright 2024 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,12 +13,15 @@
 # limitations under the License.
 from typing import TYPE_CHECKING
 
+from ...utils import _LazyModule
+from ...utils.import_utils import define_import_structure
+
+
 if TYPE_CHECKING:
-    from .configuration_qwen3mem import *
-    from .modeling_qwen3mem import *
+    from .configuration_qwen3_moe import *
+    from .modeling_qwen3_moe import *
 else:
     import sys
 
-from .modeling_qwen3mem import Qwen3MemConfig, Qwen3MemModel, Qwen3ForCausalLM, Qwen3MemDecoderLayer,Qwen3MemAttention,register_customized_qwen3
-from .kv_cache import StreamingSinkCache
-__all__ = ["Qwen3MemConfig", "Qwen3MemModel", "Qwen3ForCausalLM", "register_customized_qwen3","Qwen3MemDecoderLayer","Qwen3MemAttention","StreamingSinkCache"]
+    _file = globals()["__file__"]
+    sys.modules[__name__] = _LazyModule(__name__, _file, define_import_structure(_file), module_spec=__spec__)

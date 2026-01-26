@@ -219,12 +219,12 @@ class Qwen3MemAttention(nn.Module):
         return attn_output, attn_weights
 
 
-class Qwen3MemDecoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: Qwen3MemConfig, layer_idx: int):
+class Qwen3DecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: Qwen3Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.self_attn = Qwen3MemAttention(config=config, layer_idx=layer_idx)
+        self.self_attn = Qwen3Attention(config=config, layer_idx=layer_idx)
 
         self.mlp = Qwen3MLP(config)
         self.input_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -268,10 +268,10 @@ class Qwen3MemDecoderLayer(GradientCheckpointingLayer):
 
 @auto_docstring
 class Qwen3PreTrainedModel(PreTrainedModel):
-    config: Qwen3MemConfig
+    config: Qwen3Config
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["Qwen3MemDecoderLayer"]
+    _no_split_modules = ["Qwen3DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
@@ -280,15 +280,15 @@ class Qwen3PreTrainedModel(PreTrainedModel):
     _can_compile_fullgraph = True
     _supports_attention_backend = True
     _can_record_outputs = {
-        "hidden_states": Qwen3MemDecoderLayer,
-        "attentions": Qwen3MemAttention,
+        "hidden_states": Qwen3DecoderLayer,
+        "attentions": Qwen3Attention,
     }
 
 
 class Qwen3RotaryEmbedding(nn.Module):
     inv_freq: torch.Tensor  # fix linting for `register_buffer`
 
-    def __init__(self, config: Qwen3MemConfig, device=None):
+    def __init__(self, config: Qwen3Config, device=None):
         super().__init__()
         # BC: "rope_type" was originally "type"
         if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
@@ -422,7 +422,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = Qwen3MemModel(config)
+        self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
@@ -507,7 +507,7 @@ class Qwen3ForQuestionAnswering(GenericForQuestionAnswering, Qwen3PreTrainedMode
     base_model_prefix = "transformer"  # For BC, where `transformer` was used instead of `model`
 
 
-def register_customized_qwen3(exist_ok=True):
+def register_customized_qwen2(exist_ok=True):
     from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
 
     AutoConfig.register("qwen3", Qwen3MemConfig, exist_ok=exist_ok)

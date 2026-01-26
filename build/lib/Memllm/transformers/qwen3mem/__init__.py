@@ -19,6 +19,6 @@ if TYPE_CHECKING:
 else:
     import sys
 
-from .modeling_qwen3mem import Qwen3MemConfig, Qwen3MemModel, Qwen3ForCausalLM, Qwen3MemDecoderLayer,Qwen3MemAttention,register_customized_qwen3
-from .kv_cache import StreamingSinkCache
-__all__ = ["Qwen3MemConfig", "Qwen3MemModel", "Qwen3ForCausalLM", "register_customized_qwen3","Qwen3MemDecoderLayer","Qwen3MemAttention","StreamingSinkCache"]
+from .qwen3mem import Qwen3MemConfig, Qwen3MemModel, Qwen3ForCausalLM, Qwen3DyDecoderLayer,Qwen3Attention,register_customized_qwen3
+
+__all__ = ["Qwen3MemConfig", "Qwen3MemModel", "Qwen3ForCausalLM", "register_customized_qwen3","Qwen3MemDyDecoderLayer","Qwen3Attention"]
