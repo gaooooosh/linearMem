@@ -3,12 +3,13 @@ name = "linearmem"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "accelerate>=1.12.0",
     "bitsandbytes>=0.49.1",
     "datasets>=4.5.0",
     "einops>=0.8.1",
+    "flash-attn",
     "peft>=0.18.1",
     "torch>=2.10.0",
     "torchaudio>=2.10.0",
@@ -30,3 +31,6 @@ build-backend = "setuptools.build_meta"
 # 确保只包含你想要的包
 where = ["src/Memllm/transformers"]
 include = ["qwen3mem*"]
+
+[tool.uv.sources]
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.12/flash_attn-2.6.3+cu128torch2.10-cp313-cp313-linux_x86_64.whl" }
