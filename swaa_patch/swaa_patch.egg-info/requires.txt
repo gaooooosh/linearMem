@@ -1,0 +1,5 @@
+torch
+transformers
+
+[vllm]
+vllm>=0.7.0

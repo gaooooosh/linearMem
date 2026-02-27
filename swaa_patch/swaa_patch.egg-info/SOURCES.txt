@@ -1,0 +1,6 @@
+pyproject.toml
+swaa_patch.egg-info/PKG-INFO
+swaa_patch.egg-info/SOURCES.txt
+swaa_patch.egg-info/dependency_links.txt
+swaa_patch.egg-info/requires.txt
+swaa_patch.egg-info/top_level.txt

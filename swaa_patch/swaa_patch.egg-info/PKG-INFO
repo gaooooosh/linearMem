@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: swaa_patch
+Version: 0.1.0
+Summary: SWAA patch for HuggingFace and vLLM integration
+Author-email: gaooooosh <yonggaoxiao@bupt.edu.cn>
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: torch
+Requires-Dist: transformers
+Provides-Extra: vllm
+Requires-Dist: vllm>=0.7.0; extra == "vllm"

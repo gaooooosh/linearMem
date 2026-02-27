@@ -1,0 +1,149 @@
+[workspace]
+authors = ["gaooooosh <yonggaoxiao@bupt.edu.cn>"]
+channels = ["conda-forge", "nvidia", "pytorch"]
+name = "linearMem"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+# =============================================================================
+# 系统要求 - CUDA 13.1 系统，但PyTorch使用12.4 wheel (更好的兼容性)
+# =============================================================================
+[system-requirements]
+cuda = "13.1"
+
+# =============================================================================
+# 环境定义
+# =============================================================================
+[environments]
+default = ["deps-core", "deps-pypi"]
+
+# =============================================================================
+# 依赖分组 - Conda 包
+# =============================================================================
+[feature.deps-core.dependencies]
+# 基础开发环境
+python = "3.12.*"
+
+# CUDA 工具链 (使用系统CUDA 13.1，通过nvidia channel)
+cuda-toolkit = "13.1.*"
+cuda-nvcc = "13.1.*"
+
+# 编译工具
+gcc_linux-64 = "13.*"
+gxx_linux-64 = "13.*"
+ninja = ">=1.11"
+cmake = ">=3.28"
+
+# 编译时需要的包
+psutil = "*"
+packaging = "*"
+wheel = "*"
+setuptools = ">=61.0"
+
+# =============================================================================
+# PyPI 依赖
+# =============================================================================
+[feature.deps-pypi.pypi-dependencies]
+# PyTorch - 使用 CUDA 12.4 wheel (更好的向前兼容性，避免版本严格检查问题)
+# PyTorch 2.5.x + cu124 对 CUDA 13.x 系统兼容性更好
+torch = { version = "==2.5.1", index = "https://download.pytorch.org/whl/cu124" }
+torchvision = { version = "==0.20.1", index = "https://download.pytorch.org/whl/cu124" }
+torchaudio = { version = "==2.5.1", index = "https://download.pytorch.org/whl/cu124" }
+
+# 核心ML依赖
+transformers = ">=4.48.0"
+accelerate = "*"
+einops = "*"
+safetensors = "*"
+
+# Flash Linear Attention
+flash-linear-attention = ">=0.4.1"
+
+# vLLM (可选，取消注释启用)
+# vllm = ">=0.7.0"
+
+# =============================================================================
+# 本地包安装
+# =============================================================================
+swaa-patch = { path = "./swaa_patch", editable = true }
+
+# =============================================================================
+# 激活脚本
+# =============================================================================
+[activation]
+scripts = ["setup_env.sh"]
+
+# =============================================================================
+# 任务定义
+# =============================================================================
+[tasks]
+# 环境检查
+check-env = """
+python -c "
+import subprocess
+import torch
+
+print('=== CUDA Environment ===')
+subprocess.run(['nvcc', '--version'])
+
+print()
+print('=== PyTorch Info ===')
+print(f'PyTorch: {torch.__version__}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'CUDA version: {torch.version.cuda}')
+    print(f'Device: {torch.cuda.get_device_name(0)}')
+    print(f'Compute capability: {torch.cuda.get_device_capability(0)}')
+"
+"""
+
+# 测试基础导入
+test-imports = """
+python -c "
+import torch
+import transformers
+import fla
+print('✓ torch')
+print('✓ transformers')
+print('✓ flash-linear-attention')
+print('All base imports successful!')
+"
+"""
+
+# 测试本地包
+test-swaa = """
+python -c "
+from swaa_patch import hack_hf_swaa, SWAAConfig
+print('✓ swaa_patch imported successfully!')
+"
+"""
+
+# =============================================================================
+# Flash Attention 编译任务
+# =============================================================================
+build-flash-attn = { cmd = "cd flash-attention-SWAA/flash-attention && PATCH_TORCH_CUDA_CHECK=1 python setup.py build_ext --inplace install", description = "编译并安装 flash-attention (SWAA版本)" }
+
+test-flash-attn = { cmd = "python -c 'import flash_attn; print(f\"✓ flash_attn version: {flash_attn.__version__}\")'", depends-on = ["build-flash-attn"], description = "测试 flash_attn 导入" }
+
+build-flash-attn-vllm = { cmd = "cd flash-attention-SWAA/flash-attention-vllm && PATCH_TORCH_CUDA_CHECK=1 python setup.py build_ext --inplace install", description = "编译并安装 flash-attention-vllm (SWAA版本)", depends-on = ["build-flash-attn"] }
+
+test-flash-attn-vllm = { cmd = "python -c 'import flash_attn_vllm; print(\"✓ flash_attn_vllm imported successfully!\")'", depends-on = ["build-flash-attn-vllm"], description = "测试 flash_attn_vllm 导入" }
+
+# 完整构建
+build-all = { depends-on = ["build-flash-attn", "build-flash-attn-vllm"], description = "编译所有 Flash Attention 变体" }
+
+test-all = { depends-on = ["test-imports", "test-swaa"], description = "运行所有测试" }
+
+# 完整验证
+verify = { depends-on = ["check-env", "test-imports", "test-swaa"], description = "完整环境验证" }
+
+[dependencies]
+transformers = ">=5.2.0,<6"
+
+# =============================================================================
+# 使用指南
+# =============================================================================
+# 1. pixi install                  - 安装环境
+# 2. pixi run verify               - 验证环境
+# 3. pixi run build-flash-attn     - 编译 flash-attention
+# 4. pixi run build-all            - 编译所有算子

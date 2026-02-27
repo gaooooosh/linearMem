@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swaa_patch"
+version = "0.1.0"
+description = "SWAA patch for HuggingFace and vLLM integration"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "gaooooosh", email = "yonggaoxiao@bupt.edu.cn"}
+]
+dependencies = [
+    "torch",
+    "transformers",
+]
+
+[project.optional-dependencies]
+vllm = ["vllm>=0.7.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["swaa_patch*"]
+
+[tool.setuptools]
+py-modules = []
