@@ -25,8 +25,18 @@ except ImportError:
         )
 
 
+# 4. Import KV Cache Hack for Linear Attention Recurrent State
+# This module patches transformers KV Cache to support recurrent state.
+from .hack_kv_cache import (
+    hack_kv_cache_recurrent_state,
+    unhack_kv_cache_recurrent_state,
+)
+
+
 __all__ = [
     "hack_hf_swaa",
     "hack_vllm_swaa",
+    "hack_kv_cache_recurrent_state",
+    "unhack_kv_cache_recurrent_state",
     "SWAAConfig"
 ]
