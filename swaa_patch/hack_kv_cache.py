@@ -35,6 +35,7 @@ def _init_recurrent_state(self: CacheLayerMixin) -> None:
     """Initialize the recurrent state container if not exists."""
     if not hasattr(self, 'recurrent_state') or self.recurrent_state is None:
         self.recurrent_state = None
+        self.recurrent_state_initialized = False
 
 
 def dynamic_layer_lazy_init_swaa(
@@ -90,6 +91,7 @@ def dynamic_layer_reset_swaa(self: DynamicLayer) -> None:
     _original_dynamic_layer_reset(self)
     if hasattr(self, 'recurrent_state'):
         self.recurrent_state = None
+        self.recurrent_state_initialized = False
 
 
 def sliding_layer_lazy_init_swaa(
@@ -125,6 +127,7 @@ def sliding_layer_reset_swaa(self: DynamicSlidingWindowLayer) -> None:
     _original_sliding_layer_reset(self)
     if hasattr(self, 'recurrent_state'):
         self.recurrent_state = None
+        self.recurrent_state_initialized = False
 
 
 def quantized_layer_lazy_init_swaa(
@@ -160,6 +163,7 @@ def quantized_layer_reset_swaa(self: QuantizedLayer) -> None:
     _original_quantized_layer_reset(self)
     if hasattr(self, 'recurrent_state'):
         self.recurrent_state = None
+        self.recurrent_state_initialized = False
 
 
 def get_recurrent_state(self: CacheLayerMixin) -> torch.Tensor | tuple[torch.Tensor, ...] | None:
@@ -183,6 +187,17 @@ def set_recurrent_state(
         state: The new recurrent state tensor(s) or None to clear.
     """
     self.recurrent_state = state
+    self.recurrent_state_initialized = state is not None
+
+
+def is_recurrent_state_initialized(self: CacheLayerMixin) -> bool:
+    """
+    Check if the recurrent state has been initialized.
+
+    Returns:
+        `bool`: True if the recurrent state has been set, False otherwise.
+    """
+    return getattr(self, 'recurrent_state_initialized', False)
 
 
 def state_update(
@@ -227,6 +242,7 @@ def state_update(
     # Update the recurrent state if provided
     if recurrent_state is not None:
         self.recurrent_state = recurrent_state
+        self.recurrent_state_initialized = True
 
         # Optionally extract dtype/device for future use
         if cache_kwargs is not None and cache_kwargs.get('init_state', False):
@@ -290,6 +306,96 @@ def cache_state_update(
     return self.layers[layer_idx].state_update(recurrent_state, cache_kwargs)
 
 
+def cache_is_recurrent_state_initialized(
+    self,
+    layer_idx: int,
+) -> bool:
+    """
+    Check if the recurrent state for a specific layer has been initialized.
+
+    This method is attached to Cache classes (DynamicCache, etc.) and provides
+    a layer-indexed interface to check initialization status.
+
+    Args:
+        layer_idx (`int`):
+            The index of the layer to check.
+
+    Returns:
+        `bool`: True if the recurrent state for the specified layer has been
+                initialized, False otherwise.
+
+    Example:
+        ```python
+        from transformers import DynamicCache
+        from swaa_patch import hack_kv_cache_recurrent_state
+
+        hack_kv_cache_recurrent_state()
+
+        cache = DynamicCache()
+
+        # Check if layer 0 has initialized recurrent state
+        if not cache.is_recurrent_state_initialized(layer_idx=0):
+            # First time, need to initialize
+            initial_state = create_initial_state()
+            cache.state_update(initial_state, layer_idx=0)
+
+        # Get existing state
+        state = cache.state_update(None, layer_idx=0)
+        ```
+    """
+    # If layer doesn't exist yet, it's not initialized
+    if layer_idx >= len(self.layers):
+        return False
+
+    return self.layers[layer_idx].is_recurrent_state_initialized()
+
+
+def cache_get_recurrent_state(
+    self,
+    layer_idx: int,
+) -> torch.Tensor | tuple[torch.Tensor, ...] | None:
+    """
+    Get the recurrent state for a specific layer in the cache.
+
+    This method is attached to Cache classes (DynamicCache, etc.) and provides
+    a layer-indexed interface to retrieve the recurrent state.
+
+    Args:
+        layer_idx (`int`):
+            The index of the layer to get the state from.
+
+    Returns:
+        `torch.Tensor` or `tuple[torch.Tensor, ...]` or `None`:
+            The recurrent state for the specified layer, or None if not initialized
+            or the layer doesn't exist.
+
+    Example:
+        ```python
+        from transformers import DynamicCache
+        from swaa_patch import hack_kv_cache_recurrent_state
+
+        hack_kv_cache_recurrent_state()
+
+        cache = DynamicCache()
+
+        # Get recurrent state for layer 0 (returns None if not initialized)
+        state = cache.get_recurrent_state(layer_idx=0)
+
+        # After setting state
+        cache.state_update(recurrent_state_tensor, layer_idx=0)
+        state = cache.get_recurrent_state(layer_idx=0)  # Returns the tensor
+
+        # Non-existent layer returns None
+        state = cache.get_recurrent_state(layer_idx=99)  # None
+        ```
+    """
+    # If layer doesn't exist, return None
+    if layer_idx >= len(self.layers):
+        return None
+
+    return self.layers[layer_idx].get_recurrent_state()
+
+
 def hack_kv_cache_recurrent_state():
     """
     Apply monkey patch to transformers KV Cache layers to support recurrent state.
@@ -302,17 +408,19 @@ def hack_kv_cache_recurrent_state():
 
     After patching, each layer will have:
     - `recurrent_state` attribute for storing linear attention state
+    - `recurrent_state_initialized` attribute (bool) indicating if state has been set
     - `get_recurrent_state()` method to retrieve the state
     - `set_recurrent_state(state)` method to set the state
     - `state_update(state, cache_kwargs)` method to update and return state
+    - `is_recurrent_state_initialized()` method to check initialization status
 
     The Cache class will have:
     - `state_update(state, layer_idx, cache_kwargs)` method for layer-indexed updates
 
     The recurrent state is automatically managed during:
-    - lazy_initialization: Creates empty state container
-    - update: Accepts recurrent_state via cache_kwargs
-    - reset: Clears the recurrent state
+    - lazy_initialization: Creates empty state container with initialized=False
+    - update: Accepts recurrent_state via cache_kwargs, sets initialized=True
+    - reset: Clears the recurrent state and sets initialized=False
     """
     from transformers.cache_utils import Cache
 
@@ -323,6 +431,7 @@ def hack_kv_cache_recurrent_state():
     DynamicLayer.get_recurrent_state = get_recurrent_state
     DynamicLayer.set_recurrent_state = set_recurrent_state
     DynamicLayer.state_update = state_update
+    DynamicLayer.is_recurrent_state_initialized = is_recurrent_state_initialized
 
     # Patch DynamicSlidingWindowLayer
     DynamicSlidingWindowLayer.lazy_initialization = sliding_layer_lazy_init_swaa
@@ -331,6 +440,7 @@ def hack_kv_cache_recurrent_state():
     DynamicSlidingWindowLayer.get_recurrent_state = get_recurrent_state
     DynamicSlidingWindowLayer.set_recurrent_state = set_recurrent_state
     DynamicSlidingWindowLayer.state_update = state_update
+    DynamicSlidingWindowLayer.is_recurrent_state_initialized = is_recurrent_state_initialized
 
     # Patch QuantizedLayer
     QuantizedLayer.lazy_initialization = quantized_layer_lazy_init_swaa
@@ -339,9 +449,12 @@ def hack_kv_cache_recurrent_state():
     QuantizedLayer.get_recurrent_state = get_recurrent_state
     QuantizedLayer.set_recurrent_state = set_recurrent_state
     QuantizedLayer.state_update = state_update
+    QuantizedLayer.is_recurrent_state_initialized = is_recurrent_state_initialized
 
     # Patch Cache class with layer-indexed state_update
     Cache.state_update = cache_state_update
+    Cache.is_recurrent_state_initialized = cache_is_recurrent_state_initialized
+    Cache.get_recurrent_state = cache_get_recurrent_state
 
     print("Hacked transformers KV Cache layers to support recurrent state for linear attention.")
 
@@ -364,6 +477,8 @@ def unhack_kv_cache_recurrent_state():
         delattr(DynamicLayer, 'set_recurrent_state')
     if hasattr(DynamicLayer, 'state_update'):
         delattr(DynamicLayer, 'state_update')
+    if hasattr(DynamicLayer, 'is_recurrent_state_initialized'):
+        delattr(DynamicLayer, 'is_recurrent_state_initialized')
 
     # Restore DynamicSlidingWindowLayer
     DynamicSlidingWindowLayer.lazy_initialization = _original_sliding_layer_lazy_init
@@ -375,6 +490,8 @@ def unhack_kv_cache_recurrent_state():
         delattr(DynamicSlidingWindowLayer, 'set_recurrent_state')
     if hasattr(DynamicSlidingWindowLayer, 'state_update'):
         delattr(DynamicSlidingWindowLayer, 'state_update')
+    if hasattr(DynamicSlidingWindowLayer, 'is_recurrent_state_initialized'):
+        delattr(DynamicSlidingWindowLayer, 'is_recurrent_state_initialized')
 
     # Restore QuantizedLayer
     QuantizedLayer.lazy_initialization = _original_quantized_layer_lazy_init
@@ -386,9 +503,15 @@ def unhack_kv_cache_recurrent_state():
         delattr(QuantizedLayer, 'set_recurrent_state')
     if hasattr(QuantizedLayer, 'state_update'):
         delattr(QuantizedLayer, 'state_update')
+    if hasattr(QuantizedLayer, 'is_recurrent_state_initialized'):
+        delattr(QuantizedLayer, 'is_recurrent_state_initialized')
 
     # Restore Cache
     if hasattr(Cache, 'state_update'):
         delattr(Cache, 'state_update')
+    if hasattr(Cache, 'is_recurrent_state_initialized'):
+        delattr(Cache, 'is_recurrent_state_initialized')
+    if hasattr(Cache, 'get_recurrent_state'):
+        delattr(Cache, 'get_recurrent_state')
 
     print("Restored original transformers KV Cache layer methods.")

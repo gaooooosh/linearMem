@@ -76,6 +76,7 @@ def test_state_update_method():
 
     # Initial state is None
     print(f"Initial state: {layer.state_update(None)}")
+    print(f"Initial recurrent_state_initialized: {layer.is_recurrent_state_initialized()}")
 
     # Create and update recurrent state (similar to how update() works for kv)
     recurrent_state_1 = torch.randn(batch_size, num_heads, head_dim, state_dim)
@@ -83,17 +84,20 @@ def test_state_update_method():
     print(f"\nAfter state_update(state_1):")
     print(f"  - returned state shape: {returned_state.shape}")
     print(f"  - internal state shape: {layer.get_recurrent_state().shape}")
+    print(f"  - recurrent_state_initialized: {layer.is_recurrent_state_initialized()}")
 
     # Update with new state (overwrites)
     recurrent_state_2 = torch.randn(batch_size, num_heads, head_dim, state_dim)
     returned_state = layer.state_update(recurrent_state_2)
     print(f"\nAfter state_update(state_2):")
     print(f"  - returned state shape: {returned_state.shape}")
+    print(f"  - recurrent_state_initialized: {layer.is_recurrent_state_initialized()}")
 
     # Retrieve without updating (pass None)
     returned_state = layer.state_update(None)
     print(f"\nAfter state_update(None) (retrieve only):")
     print(f"  - returned state shape: {returned_state.shape}")
+    print(f"  - recurrent_state_initialized: {layer.is_recurrent_state_initialized()}")
 
     # Test with cache_kwargs
     recurrent_state_3 = torch.randn(batch_size, num_heads, head_dim, state_dim)
@@ -101,10 +105,13 @@ def test_state_update_method():
     print(f"\nAfter state_update with init_state=True:")
     print(f"  - recurrent_dtype: {layer.recurrent_dtype}")
     print(f"  - recurrent_device: {layer.recurrent_device}")
+    print(f"  - recurrent_state_initialized: {layer.is_recurrent_state_initialized()}")
 
     # Reset
     layer.reset()
-    print(f"\nAfter reset: {layer.state_update(None)}")
+    print(f"\nAfter reset:")
+    print(f"  - state: {layer.state_update(None)}")
+    print(f"  - recurrent_state_initialized: {layer.is_recurrent_state_initialized()}")
 
     print("\n[Test 2] PASSED ✓")
 
@@ -167,6 +174,11 @@ def test_dynamic_cache_integration():
     print(f"Cache length: {len(cache)}")
     print(f"Layer 0 keys shape: {k.shape}")
 
+    # Test Cache-level is_recurrent_state_initialized and get_recurrent_state
+    print(f"\nBefore state_update:")
+    print(f"  - cache.is_recurrent_state_initialized(0): {cache.is_recurrent_state_initialized(layer_idx=0)}")
+    print(f"  - cache.get_recurrent_state(0): {cache.get_recurrent_state(layer_idx=0)}")
+
     # Create recurrent state and update via state_update
     state_dim = 128
     recurrent_state = torch.randn(batch_size, num_heads, head_dim, state_dim)
@@ -175,19 +187,26 @@ def test_dynamic_cache_integration():
     returned_state = cache.state_update(recurrent_state, layer_idx=0)
     print(f"\nAfter cache.state_update(layer_idx=0):")
     print(f"  - returned shape: {returned_state.shape}")
-    print(f"  - layer.recurrent_state shape: {cache.layers[0].get_recurrent_state().shape}")
+    print(f"  - cache.get_recurrent_state(0) shape: {cache.get_recurrent_state(layer_idx=0).shape}")
+    print(f"  - cache.is_recurrent_state_initialized(0): {cache.is_recurrent_state_initialized(layer_idx=0)}")
 
     # Update another layer
     recurrent_state_2 = torch.randn(batch_size, num_heads, head_dim, state_dim)
     returned_state = cache.state_update(recurrent_state_2, layer_idx=1)
     print(f"\nAfter cache.state_update(layer_idx=1):")
     print(f"  - returned shape: {returned_state.shape}")
-    print(f"  - layer 1 recurrent_state shape: {cache.layers[1].get_recurrent_state().shape}")
+    print(f"  - cache.get_recurrent_state(1) shape: {cache.get_recurrent_state(layer_idx=1).shape}")
+    print(f"  - cache.is_recurrent_state_initialized(1): {cache.is_recurrent_state_initialized(layer_idx=1)}")
 
-    # Retrieve without updating
-    retrieved = cache.state_update(None, layer_idx=0)
-    print(f"\nRetrieve layer 0 state (no update):")
+    # Retrieve without updating using get_recurrent_state
+    retrieved = cache.get_recurrent_state(layer_idx=0)
+    print(f"\nRetrieve layer 0 state via get_recurrent_state:")
     print(f"  - retrieved shape: {retrieved.shape}")
+
+    # Test non-existent layer
+    print(f"\nTest non-existent layer:")
+    print(f"  - cache.is_recurrent_state_initialized(99): {cache.is_recurrent_state_initialized(layer_idx=99)}")
+    print(f"  - cache.get_recurrent_state(99): {cache.get_recurrent_state(layer_idx=99)}")
 
     print("\n[Test 4] PASSED ✓")
 

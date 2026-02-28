@@ -10,8 +10,8 @@ This script demonstrates how to:
 """
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from swaa_patch import SWAAConfig, hack_hf_swaa
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
+from swaa_patch import SWAAConfig, hack_hf_swaa,hack_kv_cache_recurrent_state
 
 
 def main():
@@ -20,6 +20,7 @@ def main():
     # =========================================================================
     # Apply SWAA patch to transformers before loading the model
     # training=False means we're using the model for inference
+    hack_kv_cache_recurrent_state()
     hack_hf_swaa(training=False)
 
     # =========================================================================
@@ -101,6 +102,7 @@ def main():
                 temperature=0.7,
                 top_p=0.9,
                 pad_token_id=tokenizer.eos_token_id,
+                past_key_values=DynamicCache(),
             )
 
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)

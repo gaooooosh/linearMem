@@ -21,6 +21,11 @@ from transformers.modeling_utils import flash_attention_forward,is_flash_attn_2_
 from transformers.modeling_flash_attention_utils import _process_flash_attention_kwargs,_hf_api_to_flash_mapping
 from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma3 import Gemma3Config
+
+from einops import rearrange, repeat
+import torch.nn.functional as F
+from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn, fused_recurrent_linear_attn
+
 from .swaa_config import SWAAConfig
 
 logger = logging.get_logger(__name__)
@@ -134,6 +139,73 @@ def _process_flash_attention_kwargs_swaa(
 
     return flash_kwargs
 
+def linear_mem_ops(
+    self,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attention_mask: torch.Tensor | None = None,
+    last_state: Cache | None = None,
+    use_cache: bool | None = False,
+    mode: str | None = None,
+        **kwargs: Unpack[dict],
+    ) -> tuple[torch.Tensor, torch.Tensor | None, Cache | None]:
+        if attention_mask is not None:
+            assert len(attention_mask.shape) == 2, (
+                "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
+                "for padding purposes (0 indicating padding). "
+                "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
+            )
+
+        batch_size, num_attention_heads, q_len, head_q_dim = q.shape # shape (batch_size, num_attention_heads, seq_length, head_dim)
+        _, _, k_len, head_k_dim = k.shape # shape (batch_size, num_attention_heads, seq_length, head_dim)
+        num_kv_groups = num_attention_heads
+        mode = 'fused_recurrent' if mode is None else mode
+
+        last_state = None
+        # if past_key_values is not None and len(past_key_values) > self.layer_idx:
+        #     last_state = past_key_values[self.layer_idx]
+
+        q = rearrange(q, '... (h d) -> ... h d', d=head_k_dim)
+        if self.num_kv_groups > 1:
+            k = repeat(k, '... (h d) -> ... (h g) d', d=head_k_dim, g=self.num_kv_groups)
+            v = repeat(v, '... (h d) -> ... (h g) d', g=self.num_kv_groups, d=head_k_dim)
+        else:
+            k = rearrange(k, '... (h d) -> ... h d', d=head_k_dim)
+            v = rearrange(v, '... (h d) -> ... h d', d=head_k_dim)
+
+        recurrent_state = last_state
+        if mode == 'fused_recurrent':
+            o, recurrent_state = fused_recurrent_linear_attn(
+                q=q,
+                k=k,
+                v=v,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+            )
+        elif mode == 'fused_chunk':
+            o, recurrent_state = fused_chunk_linear_attn(
+                q=q,
+                k=k,
+                v=v,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+            )
+        elif mode == 'chunk':
+            o, recurrent_state = chunk_linear_attn(
+                q=q,
+                k=k,
+                v=v,
+                initial_state=recurrent_state,
+                output_final_state=use_cache,
+            )
+        else:
+            raise NotImplementedError(f"Not supported mode `{mode}`.")
+
+        o = rearrange(o, '... h d -> ... (h d)')
+        return o, None, past_key_values
+
+
 def attention_forward_swaa(
         self,
         hidden_states: torch.Tensor,
@@ -191,12 +263,18 @@ def attention_forward_swaa(
 
     cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
+    last_state = None
     if past_key_values is not None:
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx,
                                                           cache_kwargs)
+
+        if not past_key_values.is_recurrent_state_initialized(self.layer_idx):
+            last_state = past_key_values.state_update(None, self.layer_idx)
+            
+        last_state = past_key_values.get_recurrent_state(self.layer_idx)
+
 
     if prompt_length is not None and force_fa_decode and sliding_window_size is not None:
         if batch_size > 1:
@@ -255,8 +333,19 @@ def attention_forward_swaa(
             force_fa_decode=force_fa_decode,
             **kwargs,
         )
+    o,h = linear_mem_ops(
+        self,
+        q=query_states,
+        k=key_states,
+        v=value_states,
+        initial_state=last_state,
+        output_final_state=True,
+    )
+    if past_key_values is not None:
+        past_key_values.state_update(h, self.layer_idx)
 
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+    attn_output = attn_output + o
     attn_output = self.o_proj(attn_output)
     return attn_output, None
 

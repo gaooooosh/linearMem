@@ -1,3 +1,31 @@
+"""
+SWAA Patch - Sliding Window Attention Adaptation Patches
+
+This package provides monkey patches for:
+1. HuggingFace Transformers models to support SWAA (Sliding Window Attention Adaptation)
+2. vLLM inference engine for SWAA support (optional)
+3. KV Cache layers to support linear attention recurrent state
+
+Quick Start:
+    from swaa_patch import hack_hf_swaa, hack_kv_cache_recurrent_state, SWAAConfig
+
+    # Apply patches
+    hack_hf_swaa(training=False)
+    hack_kv_cache_recurrent_state()
+
+    # Configure SWAA
+    swaa_config = SWAAConfig(
+        sliding_window_size=2048,
+        keep_first=64,
+        force_fa_decode=True,
+        non_sliding_layers=[0, 2, 4, 6],
+    )
+    model.config.swaa_config = swaa_config
+
+For more details, see:
+- README_KV_CACHE.md for KV Cache recurrent state usage
+"""
+
 # 1. Import Configuration
 
 from .swaa_config import SWAAConfig
