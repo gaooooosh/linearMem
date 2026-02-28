@@ -166,13 +166,13 @@ def linear_mem_ops(
         # if past_key_values is not None and len(past_key_values) > self.layer_idx:
         #     last_state = past_key_values[self.layer_idx]
 
-        q = rearrange(q, '... (h d) -> ... h d', d=head_k_dim)
-        if self.num_kv_groups > 1:
-            k = repeat(k, '... (h d) -> ... (h g) d', d=head_k_dim, g=self.num_kv_groups)
-            v = repeat(v, '... (h d) -> ... (h g) d', g=self.num_kv_groups, d=head_k_dim)
-        else:
-            k = rearrange(k, '... (h d) -> ... h d', d=head_k_dim)
-            v = rearrange(v, '... (h d) -> ... h d', d=head_k_dim)
+        # Handle GQA: expand k, v to match q's number of heads
+        # q shape: (batch, num_heads, seq, head_dim)
+        # k, v shape: (batch, num_kv_heads, seq, head_dim)
+        num_kv_groups = num_attention_heads // k.shape[1]
+        if num_kv_groups > 1:
+            k = repeat(k, '... h s d -> ... (h g) s d', g=num_kv_groups)
+            v = repeat(v, '... h s d -> ... (h g) s d', g=num_kv_groups)
 
         recurrent_state = last_state
         if mode == 'fused_recurrent':
@@ -202,8 +202,11 @@ def linear_mem_ops(
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
+        # Transpose from (batch, num_heads, seq_len, head_dim) to (batch, seq_len, num_heads, head_dim)
+        # to match flash_attention_forward output format
+        o = o.transpose(1, 2)
         o = rearrange(o, '... h d -> ... (h d)')
-        return o, None, past_key_values
+        return o, recurrent_state
 
 
 def attention_forward_swaa(
@@ -264,6 +267,12 @@ def attention_forward_swaa(
     cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
     last_state = None
+
+    # Save original key/value states for linear_mem_ops (before cache update)
+    # Linear attention requires q_len == kv_len, but cache.update() may change kv length
+    key_states_original = key_states
+    value_states_original = value_states
+
     if past_key_values is not None:
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
@@ -315,7 +324,7 @@ def attention_forward_swaa(
             **kwargs,
         )
 
-        # Concatenate outputs
+        # Concatenate outputs along sequence dimension (dim=1 after internal transpose)
         attn_output = torch.cat([attn_output_prefill, attn_output_decode], dim=1)
 
     else:
@@ -336,8 +345,8 @@ def attention_forward_swaa(
     o,h = linear_mem_ops(
         self,
         q=query_states,
-        k=key_states,
-        v=value_states,
+        k=key_states_original,
+        v=value_states_original,
         initial_state=last_state,
         output_final_state=True,
     )
@@ -345,6 +354,15 @@ def attention_forward_swaa(
         past_key_values.state_update(h, self.layer_idx)
 
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+    print(f"[DEBUG] layer_idx={self.layer_idx}, attn_output.shape: {attn_output.shape}, o.shape: {o.shape}")
+    print(f"[DEBUG] layer_idx={self.layer_idx}, input_shape: {input_shape}, query_states.shape: {query_states.shape}")
+    print(f"[DEBUG] layer_idx={self.layer_idx}, key_states_original.shape: {key_states_original.shape}, key_states.shape: {key_states.shape}")
+
+    # Check shape match before addition
+    if attn_output.shape != o.shape:
+        print(f"[ERROR] Shape mismatch! attn_output: {attn_output.shape}, o: {o.shape}")
+        raise RuntimeError(f"Shape mismatch: attn_output {attn_output.shape} vs o {o.shape}")
+
     attn_output = attn_output + o
     attn_output = self.o_proj(attn_output)
     return attn_output, None
