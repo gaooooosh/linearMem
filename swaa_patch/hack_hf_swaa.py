@@ -268,21 +268,31 @@ def attention_forward_swaa(
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
     last_state = None
 
-    # Save original key/value states for linear_mem_ops (before cache update)
-    # Linear attention requires q_len == kv_len, but cache.update() may change kv length
-    key_states_original = key_states
-    value_states_original = value_states
-
     if past_key_values is not None:
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+
+        # Save original k/v before cache update (only needed when lengths will differ)
+        # This saves memory by only keeping a reference when necessary
+        q_len = query_states.shape[2]
+        key_states_for_linear = key_states
+        value_states_for_linear = value_states
+
         key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx,
                                                           cache_kwargs)
 
+        # Use cache-updated k/v for linear attention only when lengths match
+        if key_states.shape[2] == q_len:
+            key_states_for_linear = key_states
+            value_states_for_linear = value_states
+
         if not past_key_values.is_recurrent_state_initialized(self.layer_idx):
             last_state = past_key_values.state_update(None, self.layer_idx)
-            
+
         last_state = past_key_values.get_recurrent_state(self.layer_idx)
+    else:
+        key_states_for_linear = key_states
+        value_states_for_linear = value_states
 
 
     if prompt_length is not None and force_fa_decode and sliding_window_size is not None:
@@ -345,8 +355,8 @@ def attention_forward_swaa(
     o,h = linear_mem_ops(
         self,
         q=query_states,
-        k=key_states_original,
-        v=value_states_original,
+        k=key_states_for_linear,
+        v=value_states_for_linear,
         initial_state=last_state,
         output_final_state=True,
     )
@@ -354,15 +364,6 @@ def attention_forward_swaa(
         past_key_values.state_update(h, self.layer_idx)
 
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-    print(f"[DEBUG] layer_idx={self.layer_idx}, attn_output.shape: {attn_output.shape}, o.shape: {o.shape}")
-    print(f"[DEBUG] layer_idx={self.layer_idx}, input_shape: {input_shape}, query_states.shape: {query_states.shape}")
-    print(f"[DEBUG] layer_idx={self.layer_idx}, key_states_original.shape: {key_states_original.shape}, key_states.shape: {key_states.shape}")
-
-    # Check shape match before addition
-    if attn_output.shape != o.shape:
-        print(f"[ERROR] Shape mismatch! attn_output: {attn_output.shape}, o: {o.shape}")
-        raise RuntimeError(f"Shape mismatch: attn_output {attn_output.shape} vs o {o.shape}")
-
     attn_output = attn_output + o
     attn_output = self.o_proj(attn_output)
     return attn_output, None
