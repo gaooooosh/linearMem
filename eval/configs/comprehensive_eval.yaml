@@ -10,10 +10,10 @@ task_groups:
     description: "长文本理解与生成能力评估"
     tasks:
       - "passkey"  # Passkey retrieval task
-      - "kv_retrieval"  # Key-value retrieval
-      - "longdoc_qa"  # Long document QA
-      - "needlehaystack"  # Needle in haystack
-    max_tokens: 4096  # 需要更长的上下文
+      # Note: 以下任务需要 RULER benchmark,请使用 run_ruler_32k.py
+      # - "niah_single_1"  # Needle In A Haystack
+      # - "niah_multikey"  # Multi-key retrieval
+    max_tokens: 32768  # 需要更长的上下文
 
   # 2. 常识推理 (Commonsense Reasoning)
   commonsense:
@@ -21,7 +21,6 @@ task_groups:
     tasks:
       - "hellaswag"
       - "piqa"
-      - "siqa"
       - "winogrande"
       - "openbookqa"
     num_fewshot: 0
@@ -51,7 +50,6 @@ task_groups:
     description: "数学与逻辑推理能力"
     tasks:
       - "gsm8k"
-      - "math"  # MATH dataset
       - "asdiv"  # Arithmetic skills
     num_fewshot: 4
 
@@ -61,7 +59,6 @@ task_groups:
     tasks:
       - "humaneval"
       - "mbpp"
-      - "multiple"  # Multi-language code generation
     num_fewshot: 0
 
   # 7. 阅读理解 (Reading Comprehension)
@@ -71,7 +68,6 @@ task_groups:
       - "lambada"
       - "lambada_openai"
       - "wikitext"
-      - "pile_std"
     num_fewshot: 0
 
   # 8. 语言建模 (Language Modeling)
@@ -149,3 +145,4 @@ model_defaults:
     max_new_tokens: 256
     temperature: 1.0
     top_p: 1.0
+    num_beams: 1

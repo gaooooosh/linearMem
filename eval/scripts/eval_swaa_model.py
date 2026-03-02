@@ -182,14 +182,17 @@ class SWAAHFLM(LM):
         Compute log-likelihood of continuations given contexts.
 
         Args:
-            requests: List of (context, continuation) tuples
+            requests: List of Instance objects with arguments = (context, continuation)
 
         Returns:
             List of (log_likelihood, is_greedy) tuples
         """
         results = []
 
-        for context, continuation in requests:
+        for request in requests:
+            # Extract arguments from Instance object
+            context, continuation = request.arguments
+
             # Tokenize
             context_tokens = self.tok_encode(context)
             continuation_tokens = self.tok_encode(continuation)
@@ -227,14 +230,17 @@ class SWAAHFLM(LM):
         Compute log-likelihood of sequences (for perplexity evaluation).
 
         Args:
-            requests: List of sequences
+            requests: List of Instance objects with arguments = (sequence,)
 
         Returns:
             List of log-likelihoods
         """
         results = []
 
-        for (sequence,) in requests:
+        for request in requests:
+            # Extract arguments from Instance object
+            (sequence,) = request.arguments
+
             tokens = self.tok_encode(sequence)
             input_ids = torch.tensor([tokens], device=self.device)
 
@@ -254,14 +260,17 @@ class SWAAHFLM(LM):
         Generate text until stopping criteria.
 
         Args:
-            requests: List of (context, until) tuples
+            requests: List of Instance objects with arguments = (context, until)
 
         Returns:
             List of generated texts
         """
         results = []
 
-        for context, until in requests:
+        for request in requests:
+            # Extract arguments from Instance object
+            context, until = request.arguments
+
             # Tokenize context
             inputs = self.tokenizer(context, return_tensors="pt").to(self.device)
 
@@ -277,7 +286,8 @@ class SWAAHFLM(LM):
                     num_beams=1,
                     pad_token_id=self.tokenizer.eos_token_id,
                     past_key_values=self._create_cache(),
-                    stop_strings=until if hasattr(self.tokenizer, "decode") else None,
+                    stop_strings=until if until else None,
+                    tokenizer=self.tokenizer,
                 )
 
             generated = self.tokenizer.decode(outputs[0], skip_special_tokens=True)

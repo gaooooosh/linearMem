@@ -150,17 +150,38 @@ def run_evaluation(args):
 
     # Run evaluation
     try:
-        results = evaluator.simple_evaluate(
-            model="swaa_hf",
-            model_args=model_args,
-            tasks=tasks,
-            num_fewshot=args.num_fewshot,
-            batch_size=args.batch_size,
-            max_batch_size=args.max_batch_size,
-            device=args.device,
-            use_cache=args.use_cache,
-            cache_dir=args.cache_dir,
-        )
+        # Build evaluation kwargs
+        eval_kwargs = {
+            "model": "swaa_hf",
+            "model_args": model_args,
+            "tasks": tasks,
+            "num_fewshot": args.num_fewshot,
+            "batch_size": args.batch_size,
+            "max_batch_size": args.max_batch_size,
+            "device": args.device,
+        }
+
+        # Add cache settings if specified
+        if args.use_cache:
+            eval_kwargs["use_cache"] = args.cache_dir if args.cache_dir else "lm_cache"
+
+        # Add metadata for task configuration (e.g., max_seq_lengths for passkey)
+        if args.metadata:
+            try:
+                eval_kwargs["metadata"] = json.loads(args.metadata)
+                print(f"\n📋 Metadata: {eval_kwargs['metadata']}")
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON in --metadata: {e}")
+
+        # Add generation kwargs
+        if args.gen_kwargs:
+            try:
+                eval_kwargs["gen_kwargs"] = json.loads(args.gen_kwargs)
+                print(f"\n🔧 Gen kwargs: {eval_kwargs['gen_kwargs']}")
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON in --gen_kwargs: {e}")
+
+        results = evaluator.simple_evaluate(**eval_kwargs)
 
         # Save results
         results_file = output_dir / "results.json"
@@ -282,11 +303,23 @@ Examples:
         "--num-fewshot", type=int, help="Number of few-shot examples"
     )
     parser.add_argument("--output-dir", default=None, help="Output directory (default: eval/results)")
-    parser.add_argument("--config", default="eval_configs/comprehensive_eval.yaml")
+    parser.add_argument("--config", default=None, help="Config file path (default: eval/configs/comprehensive_eval.yaml)")
 
     # Cache settings
     parser.add_argument("--use-cache", action="store_true", help="Use cache")
     parser.add_argument("--cache-dir", help="Cache directory")
+
+    # Advanced settings for long context tasks
+    parser.add_argument(
+        "--metadata",
+        type=str,
+        help='Metadata as JSON string for task configuration (e.g., \'{"max_seq_lengths":[4096,8192]}\')',
+    )
+    parser.add_argument(
+        "--gen-kwargs",
+        type=str,
+        help='Generation kwargs as JSON string (e.g., \'{"until":["\\n\\n"],"max_gen_toks":128}\')',
+    )
 
     args = parser.parse_args()
 

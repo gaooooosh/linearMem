@@ -9,8 +9,14 @@ This script runs a minimal evaluation to ensure:
 """
 
 import sys
+import os
 import torch
 from pathlib import Path
+
+# Add project root to sys.path for importing swaa_patch
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(Path(__file__).parent))
 
 print("=" * 80)
 print("SWAA Evaluation System - Quick Test")
