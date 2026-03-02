@@ -88,19 +88,27 @@ def main():
     ]
 
     for i, prompt in enumerate(test_prompts):
+        # Apply Qwen3 chat template with no thinking mode
+        messages = [{"role": "user", "content": prompt}]
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False
+        )
         print(f"\n[Test {i+1}]")
         print(f"Prompt: {prompt}")
         print("-" * 30)
 
-        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        inputs = tokenizer(text, return_tensors="pt").to(device)
 
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=128,
                 do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
+                num_beams=1,
+                temperature=1.0,
                 pad_token_id=tokenizer.eos_token_id,
                 past_key_values=DynamicCache(),
             )
