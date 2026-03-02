@@ -16,6 +16,7 @@ sys.path.insert(0, str(project_root))
 
 import torch
 from typing import Optional, List, Tuple
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
@@ -49,6 +50,18 @@ class SWAAHFLM(LM):
     ):
         # Handle batch_size from kwargs (lm-eval may pass it)
         batch_size = batch_size or kwargs.pop("batch_size", 1)
+
+        # Parse non_sliding_layers from string if needed (lm-eval passes it as string)
+        if isinstance(non_sliding_layers, str):
+            import ast
+            try:
+                non_sliding_layers = ast.literal_eval(non_sliding_layers)
+            except (ValueError, SyntaxError):
+                non_sliding_layers = []
+
+        # Ensure non_sliding_layers is a list
+        if non_sliding_layers is None:
+            non_sliding_layers = []
 
         # Call parent init with batch_size
         super().__init__()
@@ -87,7 +100,7 @@ class SWAAHFLM(LM):
             sliding_window_size=sliding_window_size,
             keep_first=keep_first,
             force_fa_decode=force_fa_decode,
-            non_sliding_layers=non_sliding_layers or [],
+            non_sliding_layers=non_sliding_layers,
         )
         self.model.config.swaa_config = self.swaa_config
 
@@ -189,7 +202,8 @@ class SWAAHFLM(LM):
         """
         results = []
 
-        for request in requests:
+        pbar = tqdm(requests, desc="loglikelihood", leave=True)
+        for request in pbar:
             # Extract arguments from Instance object
             context, continuation = request.arguments
 
@@ -237,7 +251,8 @@ class SWAAHFLM(LM):
         """
         results = []
 
-        for request in requests:
+        pbar = tqdm(requests, desc="loglikelihood_rolling", leave=True)
+        for request in pbar:
             # Extract arguments from Instance object
             (sequence,) = request.arguments
 
@@ -267,7 +282,8 @@ class SWAAHFLM(LM):
         """
         results = []
 
-        for request in requests:
+        pbar = tqdm(requests, desc="generate_until", leave=True)
+        for request in pbar:
             # Extract arguments from Instance object
             context, until = request.arguments
 
