@@ -80,9 +80,9 @@ def run_single_evaluation(
     print("=" * 80 + "\n")
 
     # Build model arguments
+    # Note: device is passed separately to simple_evaluate, not in model_args
     model_args = {
         "pretrained": model_name,
-        "device": device,
         "torch_dtype": dtype,
         "attn_implementation": attn,
         "sliding_window_size": sliding_window,
@@ -95,7 +95,16 @@ def run_single_evaluation(
     model_args_str = ",".join([f"{k}={v}" for k, v in model_args.items()])
 
     # Build generation kwargs string
-    gen_kwargs_str = ",".join([f"{k}={v}" for k, v in gen_kwargs.items()])
+    # Handle list-type parameters properly
+    gen_kwargs_parts = []
+    for k, v in gen_kwargs.items():
+        if isinstance(v, list):
+            # Convert list to proper string format
+            v_str = str(v).replace("'", '"')
+            gen_kwargs_parts.append(f"{k}={v_str}")
+        else:
+            gen_kwargs_parts.append(f"{k}={v}")
+    gen_kwargs_str = ",".join(gen_kwargs_parts)
 
     print(f"🤖 Model Args: {model_args_str}")
     print(f"🔧 Generation Args: {gen_kwargs_str}\n")
