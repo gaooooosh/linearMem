@@ -25,7 +25,7 @@ from transformers.models.gemma3 import Gemma3Config
 from einops import rearrange, repeat
 import torch.nn.functional as F
 from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn, fused_recurrent_linear_attn
-
+from fla.layers.utils import get_unpad_data, index_first_axis, pad_input
 from .swaa_config import SWAAConfig
 
 logger = logging.get_logger(__name__)
@@ -162,6 +162,12 @@ def linear_mem_ops(
         num_kv_groups = num_attention_heads
         mode = 'fused_recurrent' if mode is None else mode
 
+        cu_seqlens = kwargs.get('cu_seqlens')
+        if attention_mask is not None:
+            print(1)
+            indices, cu_seqlens, _ = get_unpad_data(attention_mask[:, -q_len:])
+            # hidden_states = index_first_axis(rearrange(q, "b s ... -> (b s) ..."), indices).unsqueeze(0)
+
         last_state = None
         # if past_key_values is not None and len(past_key_values) > self.layer_idx:
         #     last_state = past_key_values[self.layer_idx]
@@ -182,6 +188,7 @@ def linear_mem_ops(
                 v=v,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                cu_seqlens=cu_seqlens,
             )
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_linear_attn(
@@ -190,6 +197,7 @@ def linear_mem_ops(
                 v=v,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                cu_seqlens=cu_seqlens,
             )
         elif mode == 'chunk':
             o, recurrent_state = chunk_linear_attn(
@@ -198,6 +206,7 @@ def linear_mem_ops(
                 v=v,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
+                cu_seqlens=cu_seqlens,
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
@@ -352,19 +361,28 @@ def attention_forward_swaa(
             force_fa_decode=force_fa_decode,
             **kwargs,
         )
+
+    # ===================================================================#
     o,h = linear_mem_ops(
         self,
         q=query_states,
         k=key_states_for_linear,
         v=value_states_for_linear,
         initial_state=last_state,
+        attention_mask=attention_mask,
         output_final_state=True,
+        **kwargs,
     )
+    # 基于K的L2范数归一化，模拟softmax分母效果
+    k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
+    o_linear = o / k_norm
     if past_key_values is not None:
         past_key_values.state_update(h, self.layer_idx)
 
+    # =================================================================== #
+
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-    attn_output = attn_output + o
+    attn_output = 0.9 * attn_output + 0.1 * o_linear
     attn_output = self.o_proj(attn_output)
     return attn_output, None
 

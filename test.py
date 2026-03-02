@@ -58,11 +58,11 @@ def main():
     # - force_fa_decode: Use full attention during decoding
     # - non_sliding_layers: Layers that use full attention (every other layer)
     num_layers = model.config.num_hidden_layers
-    non_sliding_layers = [0,1]  # Every other layer uses full attention
+    non_sliding_layers = []  # Every other layer uses full attention
 
     swaa_config = SWAAConfig(
         sliding_window_size=2048,
-        keep_first=64,
+        keep_first=4,
         force_fa_decode=False,
         non_sliding_layers=non_sliding_layers,
     )
