@@ -91,6 +91,7 @@ def build_model_args(args, config: dict) -> str:
             "attn_implementation", "flash_attention_2"
         ),
         # "batch_size": args.batch_size or model_defaults.get("batch_size", 1),  # Passed separately
+        "max_chunk_size": args.max_chunk_size,
     }
 
     # SWAA configuration
@@ -289,7 +290,7 @@ Examples:
     parser.add_argument(
         "--attn", help="Attention implementation (flash_attention_2, eager, sdpa)"
     )
-    parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
+    parser.add_argument("--batch-size", default="auto", help="Batch size (default: auto)")
     parser.add_argument("--max-batch-size", type=int, help="Max batch size")
 
     # SWAA configuration
@@ -297,6 +298,12 @@ Examples:
         "--sliding-window", type=int, help="SWAA sliding window size"
     )
     parser.add_argument("--keep-first", type=int, help="SWAA keep_first tokens")
+
+    # Memory optimization
+    parser.add_argument(
+        "--max-chunk-size", type=int, default=2048,
+        help="Max chunk size for processing long sequences (default: 2048)"
+    )
 
     # Evaluation settings
     parser.add_argument(

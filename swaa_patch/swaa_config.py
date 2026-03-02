@@ -21,6 +21,10 @@ class SWAAConfig:
         default_factory=list,
         metadata={"help": "List of layer indices that do not use sliding attention (use full attention)."}
     )
+    enable_linear_mem: bool = field(
+        default=True,
+        metadata={"help": "Whether to enable linear memory operations for attention computation."}
+    )
 
     @property
     def mark(self):
@@ -64,5 +68,6 @@ class SWAAConfig:
             'sliding_window_size': self.sliding_window_size,
             'keep_first': self.keep_first,
             'force_fa_decode': self.force_fa_decode,
-            'non_sliding_layers': list(self.non_sliding_layers)
+            'non_sliding_layers': list(self.non_sliding_layers),
+            'enable_linear_mem': self.enable_linear_mem
         }

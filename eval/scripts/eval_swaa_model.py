@@ -15,12 +15,35 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 import torch
+from datetime import datetime
 from typing import Optional, List, Tuple
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from swaa_patch import SWAAConfig, hack_hf_swaa, hack_kv_cache_recurrent_state
+
+# Global log file path
+EVAL_LOG_FILE = Path(__file__).parent.parent / "evaluation.log"
+
+
+def _init_log_file():
+    """Initialize a fresh log file at the start of evaluation."""
+    with open(EVAL_LOG_FILE, "w", encoding="utf-8") as f:
+        f.write(f"{'='*80}\n")
+        f.write(f"Evaluation Log - Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"{'='*80}\n\n")
+
+
+def _log_sample(method: str, idx: int, input_len: int, output: str, extra_info: str = ""):
+    """Log a single sample's information."""
+    with open(EVAL_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"[{method}] Sample #{idx}\n")
+        f.write(f"  Input Length: {input_len} tokens\n")
+        if extra_info:
+            f.write(f"  {extra_info}\n")
+        f.write(f"  Output: {output[:500]}{'...' if len(output) > 500 else ''}\n")
+        f.write(f"  {'-'*60}\n")
 
 
 @register_model("swaa_hf")
@@ -46,6 +69,8 @@ class SWAAHFLM(LM):
         # Generation config
         batch_size: Optional[int] = None,
         max_length: int = 4096,
+        # Memory optimization for long sequences
+        max_chunk_size: int = 2048,
         **kwargs,
     ):
         # Handle batch_size from kwargs (lm-eval may pass it)
@@ -75,6 +100,7 @@ class SWAAHFLM(LM):
         self.torch_dtype = getattr(torch, torch_dtype)
         self.batch_size = batch_size
         self.max_length = max_length
+        self.max_chunk_size = max_chunk_size
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -116,6 +142,9 @@ class SWAAHFLM(LM):
         print(f"  - force_fa_decode: {force_fa_decode}")
         print(f"  - non_sliding_layers: {non_sliding_layers}")
         print(f"{'='*60}\n")
+
+        # Initialize fresh evaluation log
+        _init_log_file()
 
     def tok_encode(self, string: str) -> List[int]:
         """Encode string to token ids."""
@@ -202,8 +231,8 @@ class SWAAHFLM(LM):
         """
         results = []
 
-        pbar = tqdm(requests, desc="loglikelihood", leave=True)
-        for request in pbar:
+        pbar = tqdm(enumerate(requests), total=len(requests), desc="loglikelihood", leave=True)
+        for idx, request in pbar:
             # Extract arguments from Instance object
             context, continuation = request.arguments
 
@@ -237,6 +266,15 @@ class SWAAHFLM(LM):
 
             results.append((total_log_prob, is_greedy))
 
+            # Log sample
+            _log_sample(
+                method="loglikelihood",
+                idx=idx,
+                input_len=len(full_tokens),
+                output=f"log_prob={total_log_prob:.4f}, is_greedy={is_greedy}",
+                extra_info=f"Context: {len(context_tokens)} tokens | Continuation: {len(continuation_tokens)} tokens"
+            )
+
         return results
 
     def loglikelihood_rolling(self, requests) -> List[float]:
@@ -251,22 +289,48 @@ class SWAAHFLM(LM):
         """
         results = []
 
-        pbar = tqdm(requests, desc="loglikelihood_rolling", leave=True)
-        for request in pbar:
+        pbar = tqdm(enumerate(requests), total=len(requests), desc="loglikelihood_rolling", leave=True)
+        for idx, request in pbar:
             # Extract arguments from Instance object
             (sequence,) = request.arguments
 
             tokens = self.tok_encode(sequence)
-            input_ids = torch.tensor([tokens], device=self.device)
 
-            with torch.no_grad():
-                logits = self._model_call(input_ids)
+            # Chunked processing to avoid OOM on long sequences
+            total_log_prob = 0.0
+            chunk_size = self.max_chunk_size
 
-            # Compute log probabilities
-            log_probs = torch.nn.functional.log_softmax(logits[0, :-1, :], dim=-1)
-            token_log_probs = log_probs[range(len(tokens) - 1), tokens[1:]]
+            for chunk_start in range(0, len(tokens), chunk_size):
+                chunk_end = min(chunk_start + chunk_size + 1, len(tokens))  # +1 for next token prediction
+                chunk_tokens = tokens[chunk_start:chunk_end]
 
-            results.append(token_log_probs.sum().item())
+                if len(chunk_tokens) < 2:
+                    continue
+
+                input_ids = torch.tensor([chunk_tokens], device=self.device)
+
+                with torch.no_grad():
+                    logits = self._model_call(input_ids)
+
+                # Compute log probabilities for this chunk
+                log_probs = torch.nn.functional.log_softmax(logits[0, :-1, :], dim=-1)
+                chunk_token_log_probs = log_probs[range(len(chunk_tokens) - 1), chunk_tokens[1:]]
+
+                total_log_prob += chunk_token_log_probs.sum().item()
+
+                # Clear cache to free memory
+                torch.cuda.empty_cache()
+
+            results.append(total_log_prob)
+
+            # Log sample
+            _log_sample(
+                method="loglikelihood_rolling",
+                idx=idx,
+                input_len=len(tokens),
+                output=f"log_prob={total_log_prob:.4f}",
+                extra_info=f"Chunks: {(len(tokens) + chunk_size - 1) // chunk_size}"
+            )
 
         return results
 
@@ -282,13 +346,14 @@ class SWAAHFLM(LM):
         """
         results = []
 
-        pbar = tqdm(requests, desc="generate_until", leave=True)
-        for request in pbar:
+        pbar = tqdm(enumerate(requests), total=len(requests), desc="generate_until", leave=True)
+        for idx, request in pbar:
             # Extract arguments from Instance object
             context, until = request.arguments
 
             # Tokenize context
             inputs = self.tokenizer(context, return_tensors="pt").to(self.device)
+            input_len = inputs["input_ids"].shape[1]
 
             # Prepare stopping criteria
             if isinstance(until, str):
@@ -318,5 +383,15 @@ class SWAAHFLM(LM):
                     generated = generated.split(stop)[0].strip()
 
             results.append(generated)
+
+            # Log sample
+            output_len = outputs.shape[1] - input_len
+            _log_sample(
+                method="generate_until",
+                idx=idx,
+                input_len=input_len,
+                output=generated,
+                extra_info=f"Output Length: {output_len} tokens | Stop: {until}"
+            )
 
         return results

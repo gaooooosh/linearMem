@@ -128,7 +128,7 @@ presets:
 
 model_defaults:
   # 基础配置
-  batch_size: 1
+  batch_size: "auto"
   device: "cuda:0"
   torch_dtype: "bfloat16"
   attn_implementation: "flash_attention_2"
