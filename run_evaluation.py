@@ -34,6 +34,9 @@ import yaml
 # Add current directory to path for custom model import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Import and register custom model BEFORE importing lm_eval
+from eval_swaa_model import SWAAHFLM  # This registers the model
+
 from lm_eval import evaluator
 from lm_eval.utils import make_table
 
@@ -73,14 +76,16 @@ def build_model_args(args, config: dict) -> str:
     model_defaults = config.get("model_defaults", {})
 
     # Base arguments
+    # NOTE: device and batch_size are passed separately to simple_evaluate,
+    # not in model_args string
     model_args = {
         "pretrained": args.model,
-        "device": args.device,
+        # "device": args.device,  # Passed separately
         "torch_dtype": args.dtype or model_defaults.get("torch_dtype", "bfloat16"),
         "attn_implementation": args.attn or model_defaults.get(
             "attn_implementation", "flash_attention_2"
         ),
-        "batch_size": args.batch_size or model_defaults.get("batch_size", 1),
+        # "batch_size": args.batch_size or model_defaults.get("batch_size", 1),  # Passed separately
     }
 
     # SWAA configuration

@@ -1,0 +1,28 @@
+# RULER 32K 多模型对比评测配置文件示例
+
+models:
+  # 模型 1: 基础模型
+  - name: "Qwen3-1.7B-Base"
+    path: "Qwen/Qwen3-1.7B"
+    # 不使用 SWAA
+
+  # 模型 2: SWAA 2048
+  - name: "Qwen3-1.7B-SWAA-2048"
+    path: "Qwen/Qwen3-1.7B"
+    swaa_window: 2048
+    keep_first: 4
+
+  # 模型 3: SWAA 4096
+  - name: "Qwen3-1.7B-SWAA-4096"
+    path: "Qwen/Qwen3-1.7B"
+    swaa_window: 4096
+    keep_first: 8
+
+  # 模型 4: 自定义模型
+  - name: "Your-Custom-Model"
+    path: "/path/to/your/model"
+    swaa_window: 2048
+    keep_first: 4
+
+# 使用方法:
+# python run_ruler_32k_comparison.py --config models_comparison_config.yaml --device cuda:0

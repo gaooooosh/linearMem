@@ -35,10 +35,14 @@ class SWAAHFLM(LM):
         force_fa_decode: bool = False,
         non_sliding_layers: Optional[List[int]] = None,
         # Generation config
-        batch_size: int = 1,
+        batch_size: Optional[int] = None,
         max_length: int = 4096,
         **kwargs,
     ):
+        # Handle batch_size from kwargs (lm-eval may pass it)
+        batch_size = batch_size or kwargs.pop("batch_size", 1)
+
+        # Call parent init with batch_size
         super().__init__()
 
         # Apply SWAA patches
