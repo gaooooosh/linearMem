@@ -65,6 +65,7 @@ def main():
         keep_first=4,
         force_fa_decode=False,
         non_sliding_layers=non_sliding_layers,
+        enable_linear_mem=True,
     )
 
     # Attach SWAA config to model config

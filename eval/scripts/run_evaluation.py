@@ -100,6 +100,8 @@ def build_model_args(args, config: dict) -> str:
         swaa_config["sliding_window_size"] = args.sliding_window
     if args.keep_first:
         swaa_config["keep_first"] = args.keep_first
+    if args.enable_linear_mem is not None:
+        swaa_config["enable_linear_mem"] = args.enable_linear_mem
 
     model_args.update(swaa_config)
 
@@ -265,6 +267,12 @@ Examples:
 
   # With custom SWAA config
   python run_evaluation.py --preset standard --sliding_window 4096 --keep_first 8
+
+  # Disable linear memory operations
+  python run_evaluation.py --preset standard --enable-linear-mem false
+
+  # Enable linear memory operations explicitly
+  python run_evaluation.py --preset standard --enable-linear-mem true
         """,
     )
 
@@ -298,6 +306,12 @@ Examples:
         "--sliding-window", type=int, help="SWAA sliding window size"
     )
     parser.add_argument("--keep-first", type=int, help="SWAA keep_first tokens")
+    parser.add_argument(
+        "--enable-linear-mem",
+        type=lambda x: x.lower() == 'true',
+        default=None,
+        help="Enable/disable linear memory operations (true/false). Default: from config file"
+    )
 
     # Memory optimization
     parser.add_argument(

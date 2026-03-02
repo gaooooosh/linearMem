@@ -3,3 +3,4 @@
 !.pixi/config.toml
 .claude/*
 eval/evaluation.log
+eval/results/*

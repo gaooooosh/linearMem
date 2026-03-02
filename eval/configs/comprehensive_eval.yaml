@@ -139,6 +139,7 @@ model_defaults:
     keep_first: 4
     force_fa_decode: false
     non_sliding_layers: []
+    enable_linear_mem: true  # Whether to enable linear memory operations
 
   # 生成配置
   generation:

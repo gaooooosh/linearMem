@@ -240,6 +240,7 @@ def attention_forward_swaa(
     non_sliding_layers=swaa_config.non_sliding_layers
     force_fa_decode=swaa_config.force_fa_decode
     keep_first=swaa_config.keep_first
+    enable_linear_mem=swaa_config.enable_linear_mem
 
     # Disable sliding window if the current layer is in non_sliding_layers
     if int(self.layer_idx) in non_sliding_layers:
@@ -363,26 +364,30 @@ def attention_forward_swaa(
         )
 
     # ===================================================================#
-    o,h = linear_mem_ops(
-        self,
-        q=query_states,
-        k=key_states_for_linear,
-        v=value_states_for_linear,
-        initial_state=last_state,
-        attention_mask=attention_mask,
-        output_final_state=True,
-        **kwargs,
-    )
-    # 基于K的L2范数归一化，模拟softmax分母效果
-    k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
-    o_linear = o / k_norm
-    if past_key_values is not None:
-        past_key_values.state_update(h, self.layer_idx)
+    if enable_linear_mem:
+        o,h = linear_mem_ops(
+            self,
+            q=query_states,
+            k=key_states_for_linear,
+            v=value_states_for_linear,
+            initial_state=last_state,
+            attention_mask=attention_mask,
+            output_final_state=True,
+            **kwargs,
+        )
+        # 基于K的L2范数归一化，模拟softmax分母效果
+        k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
+        o_linear = o / k_norm
+        if past_key_values is not None:
+            past_key_values.state_update(h, self.layer_idx)
+
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = 0.9 * attn_output + 0.1 * o_linear
+    else:
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 
     # =================================================================== #
 
-    attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-    attn_output = 0.9 * attn_output + 0.1 * o_linear
     attn_output = self.o_proj(attn_output)
     return attn_output, None
 
