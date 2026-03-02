@@ -93,7 +93,14 @@ def evaluate_single_model(model_config: dict, args):
 
     # 创建输出目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(args.output_dir) / f"{model_name}_{timestamp}"
+    if args.output_dir is None:
+        # Use default eval/results directory
+        script_dir = Path(__file__).parent
+        output_base = script_dir.parent / "results"
+    else:
+        output_base = Path(args.output_dir)
+
+    output_dir = output_base / f"{model_name}_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n开始评测 {len(RULER_32K_TASKS)} 个任务...")
@@ -333,8 +340,8 @@ def main():
     )
     parser.add_argument(
         "--output-dir",
-        default="eval_results/comparison",
-        help="输出目录 (default: eval_results/comparison)",
+        default=None,
+        help="输出目录 (default: eval/results)",
     )
 
     # 模型名称
@@ -390,7 +397,14 @@ def main():
 
     # 创建输出目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(args.output_dir) / f"comparison_{timestamp}"
+    if args.output_dir is None:
+        # Use default eval/results directory
+        script_dir = Path(__file__).parent
+        output_base = script_dir.parent / "results"
+    else:
+        output_base = Path(args.output_dir)
+
+    output_dir = output_base / f"comparison_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "=" * 80)

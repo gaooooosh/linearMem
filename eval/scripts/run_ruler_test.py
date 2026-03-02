@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """
-RULER 32K Long Context Evaluation Script
+RULER Long Context Evaluation Script (Small Scale)
 
-Run RULER evaluation with 32K context length and 100 samples per task.
+RULER is a comprehensive long-context benchmark. This script runs a small-scale
+test to evaluate your SWAA model's long-context capabilities.
+
+Available RULER tasks:
+- niah_single_1/2/3: Needle In A Haystack (single needle)
+- niah_multikey: Multiple keys to retrieve
+- niah_multivalue: Multiple values to retrieve
+- niah_multiquery: Multiple queries
+- ruler_cwe: Code Word Extraction
+- ruler_fwe: Frequent Word Extraction
+- ruler_vt: Variable Tracking
+- ruler_qa_hotpot: HotpotQA long-context
+- ruler_qa_squad: SQuAD long-context
 """
 
 import argparse
@@ -16,48 +28,73 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import and register custom model BEFORE importing lm_eval
-from eval_swaa_model import SWAAHFLM
+from eval_swaa_model import SWAAHFLM  # This registers the model
 
 from lm_eval import evaluator
 from lm_eval.utils import make_table
 
 
-def run_ruler_32k_evaluation(args):
-    """Run RULER evaluation with 32K context length."""
+def run_ruler_evaluation(args):
+    """Run RULER evaluation with SWAA model."""
     print("\n" + "=" * 80)
-    print("RULER 32K Long Context Evaluation")
+    print("RULER Long Context Evaluation (Small Scale)")
     print("=" * 80)
 
-    # Define RULER tasks for comprehensive evaluation
-    tasks = [
-        "niah_single_1",
-        "niah_single_2",
-        "niah_single_3",
-        "niah_multikey_1",
-        "niah_multivalue",
-        "niah_multiquery",
-        "passkey",
-        "ruler_vt",
-        "ruler_cwe",
-        "ruler_fwe",
-    ]
+    # Define task sets for different test sizes
+    task_sets = {
+        "mini": [
+            "niah_single_1",  # Basic needle in haystack
+            "passkey",  # Passkey retrieval
+        ],
+        "small": [
+            "niah_single_1",
+            "niah_single_2",
+            "passkey",
+            "ruler_vt",  # Variable tracking
+        ],
+        "medium": [
+            "niah_single_1",
+            "niah_single_2",
+            "niah_single_3",
+            "niah_multikey",
+            "passkey",
+            "ruler_vt",
+            "ruler_cwe",  # Code word extraction
+        ],
+        "full": [
+            "niah_single_1",
+            "niah_single_2",
+            "niah_single_3",
+            "niah_multikey",
+            "niah_multivalue",
+            "niah_multiquery",
+            "passkey",
+            "ruler_vt",
+            "ruler_cwe",
+            "ruler_fwe",
+            "ruler_qa_hotpot",
+            "ruler_qa_squad",
+        ],
+    }
 
-    print(f"\n📋 Test Configuration:")
-    print(f"  Context Length: 32K tokens")
-    print(f"  Samples per task: {args.limit}")
-    print(f"  Total tasks: {len(tasks)}")
-    print(f"  Total samples: {len(tasks) * args.limit}")
-    print(f"\n📊 Tasks: {tasks}")
-    print(f"\n🎯 Model: {args.model}")
+    # Select tasks based on size
+    tasks = task_sets.get(args.size, task_sets["mini"])
+
+    print(f"\n📋 Test Size: {args.size}")
+    print(f"📊 Tasks: {tasks}")
+    print(f"🎯 Model: {args.model}")
     print(f"💻 Device: {args.device}")
     print(f"🔧 SWAA Window: {args.sliding_window}")
 
     # Build model arguments
-    # NOTE: device and batch_size are passed separately to simple_evaluate
+    # NOTE: device and batch_size are passed separately to simple_evaluate,
+    # not in model_args string
     model_args = {
         "pretrained": args.model,
+        # "device": args.device,  # Passed separately
         "torch_dtype": args.dtype,
         "attn_implementation": args.attn,
+        # "batch_size": args.batch_size,  # Passed separately
         "sliding_window_size": args.sliding_window,
         "keep_first": args.keep_first,
         "force_fa_decode": False,
@@ -66,27 +103,23 @@ def run_ruler_32k_evaluation(args):
 
     model_args_str = ",".join([f"{k}={v}" for k, v in model_args.items()])
 
-    # Generation kwargs for 32K context
-    gen_kwargs = {
-        "max_gen_toks": 128,  # Maximum generation tokens
-        "temperature": 0.0,  # Greedy decoding for deterministic results
-        "top_p": 1.0,
-        "until": ["\n", "</s>", "<|endoftext|>"],  # Stop sequences
-    }
-
-    gen_kwargs_str = ",".join([f"{k}={v}" for k, v in gen_kwargs.items()])
-
     print(f"\n🤖 Model Args: {model_args_str}")
-    print(f"\n🔧 Generation Args: {gen_kwargs_str}")
 
     # Setup output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(args.output_dir) / f"ruler_32k_{timestamp}"
+    if args.output_dir is None:
+        # Use default eval/results directory
+        script_dir = Path(__file__).parent
+        output_base = script_dir.parent / "results"
+    else:
+        output_base = Path(args.output_dir)
+
+    output_dir = output_base / f"ruler_{args.size}_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n📁 Output: {output_dir}")
     print("\n" + "=" * 80)
-    print("Starting RULER 32K Evaluation...")
+    print("Starting RULER Evaluation...")
     print("=" * 80 + "\n")
 
     # Run evaluation
@@ -99,9 +132,7 @@ def run_ruler_32k_evaluation(args):
             batch_size=args.batch_size,
             max_batch_size=args.batch_size,
             device=args.device,
-            limit=args.limit,
-            gen_kwargs=gen_kwargs_str,
-            log_samples=False,  # Don't log all samples to save space
+            limit=args.limit,  # Limit number of samples for small-scale test
         )
 
         # Save results
@@ -111,7 +142,7 @@ def run_ruler_32k_evaluation(args):
 
         # Print results table
         print("\n" + "=" * 80)
-        print("RULER 32K Evaluation Results")
+        print("RULER Evaluation Results")
         print("=" * 80 + "\n")
         print(make_table(results))
 
@@ -121,7 +152,7 @@ def run_ruler_32k_evaluation(args):
             f.write(make_table(results))
 
         # Generate report
-        generate_32k_report(results, output_dir, args, tasks)
+        generate_ruler_report(results, output_dir, args, tasks)
 
         print(f"\n✅ Results saved to: {output_dir}")
         print(f"   - Full results: {results_file}")
@@ -132,25 +163,24 @@ def run_ruler_32k_evaluation(args):
     except Exception as e:
         print(f"\n❌ Evaluation failed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
 
-def generate_32k_report(results: dict, output_dir: Path, args: argparse.Namespace, tasks: list):
-    """Generate RULER 32K evaluation report."""
-    report_file = output_dir / "ruler_32k_report.md"
+def generate_ruler_report(results: dict, output_dir: Path, args: argparse.Namespace, tasks: list):
+    """Generate RULER-specific evaluation report."""
+    report_file = output_dir / "ruler_report.md"
 
     with open(report_file, "w") as f:
-        f.write("# RULER 32K Long Context Evaluation Report\n\n")
+        f.write("# RULER Long Context Evaluation Report\n\n")
         f.write(f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
         f.write("## Configuration\n\n")
-        f.write(f"- **Context Length:** 32K tokens\n")
-        f.write(f"- **Samples per Task:** {args.limit}\n")
-        f.write(f"- **Total Tasks:** {len(tasks)}\n")
-        f.write(f"- **Total Samples:** {len(tasks) * args.limit}\n")
         f.write(f"- **Model:** {args.model}\n")
         f.write(f"- **Device:** {args.device}\n")
+        f.write(f"- **Test Size:** {args.size}\n")
+        f.write(f"- **Sample Limit:** {args.limit or 'Full'}\n")
         f.write(f"- **SWAA Window:** {args.sliding_window}\n")
         f.write(f"- **Keep First:** {args.keep_first}\n\n")
 
@@ -164,67 +194,78 @@ def generate_32k_report(results: dict, output_dir: Path, args: argparse.Namespac
             f.write("| Task | Metric | Score |\n")
             f.write("|------|--------|-------|\n")
 
-            # Track accuracy scores
-            accuracies = []
             for task_name, task_results in results["results"].items():
                 for metric, value in task_results.items():
                     if isinstance(value, (int, float)):
                         f.write(f"| {task_name} | {metric} | {value:.4f} |\n")
-                        if "acc" in metric.lower():
-                            accuracies.append(value)
+
+            # Calculate average if we have accuracy scores
+            accuracies = []
+            for task_name, task_results in results["results"].items():
+                for metric, value in task_results.items():
+                    if "acc" in metric.lower() and isinstance(value, (int, float)):
+                        accuracies.append(value)
 
             if accuracies:
                 avg_acc = sum(accuracies) / len(accuracies)
-                f.write(f"\n**Average Accuracy:** {avg_acc:.4f} ({avg_acc*100:.2f}%)\n\n")
+                f.write(f"\n**Average Accuracy:** {avg_acc:.4f}\n\n")
 
-                # Performance categorization
-                f.write("## Performance Analysis\n\n")
-                if avg_acc >= 0.9:
-                    f.write("✅ **Excellent**: Model performs exceptionally well on 32K context tasks.\n")
-                elif avg_acc >= 0.7:
-                    f.write("✅ **Good**: Model shows strong performance on 32K context tasks.\n")
-                elif avg_acc >= 0.5:
-                    f.write("⚠️ **Moderate**: Model has reasonable performance but room for improvement.\n")
-                else:
-                    f.write("❌ **Needs Improvement**: Model struggles with 32K context tasks.\n")
-
-        f.write("\n## Detailed Results\n\n")
+        f.write("## Detailed Results\n\n")
         f.write("```json\n")
         f.write(json.dumps(results.get("results", {}), indent=2))
         f.write("\n```\n")
 
-        # Add interpretation guide
-        f.write("\n## Interpretation Guide\n\n")
-        f.write("### RULER Tasks at 32K Context\n\n")
+        # Add interpretation
+        f.write("\n## Interpretation\n\n")
+        f.write("### RULER Tasks Explanation\n\n")
         f.write("**NIAH (Needle In A Haystack):**\n")
-        f.write("- Tests ability to find specific information in 32K token contexts\n")
+        f.write("- Tests the model's ability to find specific information in long contexts\n")
         f.write("- Single: One needle to find\n")
         f.write("- Multi-key: Multiple keys to retrieve\n")
         f.write("- Multi-value: Multiple values per key\n")
         f.write("- Multi-query: Multiple queries per context\n\n")
 
         f.write("**Passkey:**\n")
-        f.write("- Tests ability to recall a passkey buried in 32K tokens\n\n")
+        f.write("- Tests ability to recall a passkey buried in long text\n\n")
 
         f.write("**Variable Tracking (VT):**\n")
         f.write("- Tests ability to track variable assignments through long code\n\n")
 
-        f.write("**Word Extraction (CWE/FWE):**\n")
-        f.write("- Tests ability to extract specific/frequent words from long text\n\n")
+        f.write("**Code Word Extraction (CWE):**\n")
+        f.write("- Tests ability to extract specific words meeting criteria\n\n")
 
-        f.write("### Expected Performance\n\n")
-        f.write("For a well-performing long-context model at 32K:\n")
-        f.write("- **NIAH tasks**: > 0.8 accuracy\n")
-        f.write("- **Passkey**: > 0.9 accuracy\n")
-        f.write("- **VT/CWE/FWE**: > 0.7 accuracy\n")
+        f.write("**Frequent Word Extraction (FWE):**\n")
+        f.write("- Tests ability to identify most frequent words\n\n")
 
-    print(f"   - 32K report: {report_file}")
+    print(f"   - RULER report: {report_file}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run RULER 32K evaluation with SWAA model",
+        description="Run RULER long context evaluation with SWAA model",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Mini test (2 tasks, fastest)
+  python run_ruler_test.py --size mini --device cuda:0
+
+  # Small test (4 tasks)
+  python run_ruler_test.py --size small --device cuda:0
+
+  # Medium test (7 tasks)
+  python run_ruler_test.py --size medium --limit 10 --device cuda:0
+
+  # Full test (all RULER tasks)
+  python run_ruler_test.py --size full --device cuda:0
+        """,
+    )
+
+    # Test size
+    parser.add_argument(
+        "--size",
+        choices=["mini", "small", "medium", "full"],
+        default="mini",
+        help="Test size: mini(2), small(4), medium(7), full(12) tasks",
     )
 
     # Model configuration
@@ -235,7 +276,7 @@ def main():
     )
     parser.add_argument(
         "--device",
-        default="cuda:7",
+        default="cuda:0",
         help="Device to use",
     )
     parser.add_argument(
@@ -273,19 +314,23 @@ def main():
     parser.add_argument(
         "--limit",
         type=int,
-        default=100,
-        help="Number of samples per task (default: 100)",
+        help="Limit number of samples per task (for small-scale test)",
     )
     parser.add_argument(
         "--output-dir",
-        default="eval_results",
-        help="Output directory",
+        default=None,
+        help="Output directory (default: eval/results)",
     )
 
     args = parser.parse_args()
 
+    # Suggest limit for small-scale test
+    if args.size in ["mini", "small"] and args.limit is None:
+        args.limit = 5
+        print(f"💡 Auto-setting sample limit to {args.limit} for {args.size} test")
+
     # Run evaluation
-    run_ruler_32k_evaluation(args)
+    run_ruler_evaluation(args)
 
 
 if __name__ == "__main__":

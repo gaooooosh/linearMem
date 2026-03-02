@@ -41,8 +41,13 @@ from lm_eval import evaluator
 from lm_eval.utils import make_table
 
 
-def load_config(config_path: str = "eval_configs/comprehensive_eval.yaml") -> dict:
+def load_config(config_path: str = None) -> dict:
     """Load evaluation configuration."""
+    if config_path is None:
+        # Use default config path relative to this script
+        script_dir = Path(__file__).parent
+        config_path = script_dir.parent / "configs" / "comprehensive_eval.yaml"
+
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
@@ -128,7 +133,14 @@ def run_evaluation(args):
 
     # Setup output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(args.output_dir) / f"eval_{timestamp}"
+    if args.output_dir is None:
+        # Use default eval/results directory
+        script_dir = Path(__file__).parent
+        output_base = script_dir.parent / "results"
+    else:
+        output_base = Path(args.output_dir)
+
+    output_dir = output_base / f"eval_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n📁 Results will be saved to: {output_dir}")
@@ -269,7 +281,7 @@ Examples:
     parser.add_argument(
         "--num-fewshot", type=int, help="Number of few-shot examples"
     )
-    parser.add_argument("--output-dir", default="eval_results", help="Output directory")
+    parser.add_argument("--output-dir", default=None, help="Output directory (default: eval/results)")
     parser.add_argument("--config", default="eval_configs/comprehensive_eval.yaml")
 
     # Cache settings

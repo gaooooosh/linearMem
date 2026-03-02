@@ -91,7 +91,8 @@ try:
     import json
     from datetime import datetime
 
-    output_dir = Path("eval_results") / f"test_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    script_dir = Path(__file__).parent
+    output_dir = script_dir.parent / "results" / f"test_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     results_file = output_dir / "test_results.json"
