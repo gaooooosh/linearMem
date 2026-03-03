@@ -177,10 +177,8 @@ def linear_mem_ops(
         # k, v shape: (batch, num_kv_heads, seq, head_dim)
         num_kv_groups = num_attention_heads // k.shape[1]
         if num_kv_groups > 1:
-            # ✨ 优化: 使用 interleave + expand 替代 repeat，避免内存复制
-            # 性能提升: 441x 加速 (99.8% 提升)
-            k = k.unsqueeze(2).expand(-1, -1, num_kv_groups, -1, -1).reshape(batch_size, num_attention_heads, k_len, head_k_dim)
-            v = v.unsqueeze(2).expand(-1, -1, num_kv_groups, -1, -1).reshape(batch_size, num_attention_heads, k_len, head_k_dim)
+            k = repeat(k, '... h s d -> ... (h g) s d', g=num_kv_groups)
+            v = repeat(v, '... h s d -> ... (h g) s d', g=num_kv_groups)
 
         recurrent_state = last_state
         if mode == 'fused_recurrent':
@@ -377,26 +375,14 @@ def attention_forward_swaa(
             output_final_state=True,
             **kwargs,
         )
-        # ✨ 优化: 使用缓存的归一化权重，        # 性能提升: 18.7x 加速 (94.6% 提升)
-        if not hasattr(self, '_k_norm_cache'):
-            self._k_norm_cache = {}
-
-        if self.layer_idx not in self._k_norm_cache:
-            # 第一次计算
-            k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
-            self._k_norm_cache[self.layer_idx] = k_norm
-        else:
-            # 使用缓存
-            k_norm = self._k_norm_cache[self.layer_idx]
-
+        # 基于K的L2范数归一化，模拟softmax分母效果
+        k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
         o_linear = o / k_norm
         if past_key_values is not None:
             past_key_values.state_update(h, self.layer_idx)
 
-        # ✨ 优化: 使用原地操作进行混合输出
-        # 性能提升: 2.7x 加速 (62.4% 提升)
-        attn_output = attn_output.reshape(*input_shape, -1)
-        attn_output.mul_(0.9).add_(o_linear, alpha=0.1)
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = 0.9 * attn_output + 0.1 * o_linear
     else:
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 
