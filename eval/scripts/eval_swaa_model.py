@@ -85,6 +85,10 @@ class SWAAHFLM(LM):
             except (ValueError, SyntaxError):
                 non_sliding_layers = []
 
+        # Convert tuple to list (for hashability in metadata passing)
+        if isinstance(non_sliding_layers, tuple):
+            non_sliding_layers = list(non_sliding_layers)
+
         # Ensure non_sliding_layers is a list
         if non_sliding_layers is None:
             non_sliding_layers = []

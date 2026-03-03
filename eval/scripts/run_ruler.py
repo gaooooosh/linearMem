@@ -96,6 +96,8 @@ def run_ruler_evaluation(args):
         print(f"  - {task}")
 
     # 构建模型参数
+    # 注意：所有参数必须是可哈希的类型，因为 lm-eval 会将 model_args 传递给 custom_dataset
+    # 而 custom_dataset 中的 get_tokenizer 使用了 @cache 装饰器
     model_args = {
         "pretrained": args.model,
         "torch_dtype": args.dtype,
@@ -103,6 +105,7 @@ def run_ruler_evaluation(args):
         "sliding_window_size": args.sliding_window,
         "keep_first": args.keep_first,
         "enable_linear_mem": args.enable_linear_mem,
+        # non_sliding_layers 已经是元组（在第464行转换）
         "non_sliding_layers": args.non_sliding_layers,
         "force_fa_decode": False,
         "max_chunk_size": args.max_chunk_size,
@@ -457,11 +460,11 @@ def main():
     if args.no_linear_mem:
         args.enable_linear_mem = False
 
-    # 解析 non-sliding-layers
+    # 解析 non-sliding-layers（转换为元组以保证可哈希性）
     if args.non_sliding_layers:
-        args.non_sliding_layers = [int(x.strip()) for x in args.non_sliding_layers.split(",") if x.strip()]
+        args.non_sliding_layers = tuple(int(x.strip()) for x in args.non_sliding_layers.split(",") if x.strip())
     else:
-        args.non_sliding_layers = []
+        args.non_sliding_layers = tuple()  # 使用空元组而不是空列表
 
     # 运行评测
     run_ruler_evaluation(args)
