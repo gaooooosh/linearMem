@@ -53,8 +53,8 @@ except ImportError:
         )
 
 
-# 4. Import KV Cache Hack for Linear Attention Recurrent State
-# This module patches transformers KV Cache to support recurrent state.
+# 4. Import KV Cache Hack for Linear Attention Recurrent State and k_norm Cache
+# This module patches transformers KV Cache to support recurrent state and k_norm caching.
 from .hack_kv_cache import (
     hack_kv_cache_recurrent_state,
     unhack_kv_cache_recurrent_state,

@@ -38,16 +38,25 @@ def _init_recurrent_state(self: CacheLayerMixin) -> None:
         self.recurrent_state_initialized = False
 
 
+def _init_k_norm_cache(self: CacheLayerMixin) -> None:
+    """Initialize the k_norm cache container if not exists."""
+    if not hasattr(self, 'k_norm_cache') or self.k_norm_cache is None:
+        self.k_norm_cache = None
+        self.k_norm_cache_initialized = False
+
+
 def dynamic_layer_lazy_init_swaa(
     self: DynamicLayer,
     key_states: torch.Tensor,
     value_states: torch.Tensor
 ) -> None:
-    """Patched lazy_initialization that also initializes recurrent state."""
+    """Patched lazy_initialization that also initializes recurrent state and k_norm cache."""
     # Call original initialization
     _original_dynamic_layer_lazy_init(self, key_states, value_states)
     # Initialize recurrent state container
     _init_recurrent_state(self)
+    # Initialize k_norm cache container
+    _init_k_norm_cache(self)
 
 
 def dynamic_layer_update_swaa(
@@ -76,6 +85,10 @@ def dynamic_layer_update_swaa(
     if not hasattr(self, 'recurrent_state'):
         _init_recurrent_state(self)
 
+    # Lazy initialization for k_norm cache
+    if not hasattr(self, 'k_norm_cache'):
+        _init_k_norm_cache(self)
+
     # Handle recurrent state update from cache_kwargs
     if cache_kwargs is not None:
         new_recurrent_state = cache_kwargs.get('recurrent_state', None)
@@ -87,11 +100,14 @@ def dynamic_layer_update_swaa(
 
 
 def dynamic_layer_reset_swaa(self: DynamicLayer) -> None:
-    """Patched reset that also clears recurrent state."""
+    """Patched reset that also clears recurrent state and k_norm cache."""
     _original_dynamic_layer_reset(self)
     if hasattr(self, 'recurrent_state'):
         self.recurrent_state = None
         self.recurrent_state_initialized = False
+    if hasattr(self, 'k_norm_cache'):
+        self.k_norm_cache = None
+        self.k_norm_cache_initialized = False
 
 
 def sliding_layer_lazy_init_swaa(
@@ -102,6 +118,7 @@ def sliding_layer_lazy_init_swaa(
     """Patched lazy_initialization for DynamicSlidingWindowLayer."""
     _original_sliding_layer_lazy_init(self, key_states, value_states)
     _init_recurrent_state(self)
+    _init_k_norm_cache(self)
 
 
 def sliding_layer_update_swaa(
@@ -110,9 +127,12 @@ def sliding_layer_update_swaa(
     value_states: torch.Tensor,
     cache_kwargs: dict[str, Any] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Patched update for DynamicSlidingWindowLayer with recurrent state support."""
+    """Patched update for DynamicSlidingWindowLayer with recurrent state and k_norm cache support."""
     if not hasattr(self, 'recurrent_state'):
         _init_recurrent_state(self)
+
+    if not hasattr(self, 'k_norm_cache'):
+        _init_k_norm_cache(self)
 
     if cache_kwargs is not None:
         new_recurrent_state = cache_kwargs.get('recurrent_state', None)
@@ -128,6 +148,9 @@ def sliding_layer_reset_swaa(self: DynamicSlidingWindowLayer) -> None:
     if hasattr(self, 'recurrent_state'):
         self.recurrent_state = None
         self.recurrent_state_initialized = False
+    if hasattr(self, 'k_norm_cache'):
+        self.k_norm_cache = None
+        self.k_norm_cache_initialized = False
 
 
 def quantized_layer_lazy_init_swaa(
@@ -138,6 +161,7 @@ def quantized_layer_lazy_init_swaa(
     """Patched lazy_initialization for QuantizedLayer."""
     _original_quantized_layer_lazy_init(self, key_states, value_states)
     _init_recurrent_state(self)
+    _init_k_norm_cache(self)
 
 
 def quantized_layer_update_swaa(
@@ -146,9 +170,12 @@ def quantized_layer_update_swaa(
     value_states: torch.Tensor,
     cache_kwargs: dict[str, Any] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Patched update for QuantizedLayer with recurrent state support."""
+    """Patched update for QuantizedLayer with recurrent state and k_norm cache support."""
     if not hasattr(self, 'recurrent_state'):
         _init_recurrent_state(self)
+
+    if not hasattr(self, 'k_norm_cache'):
+        _init_k_norm_cache(self)
 
     if cache_kwargs is not None:
         new_recurrent_state = cache_kwargs.get('recurrent_state', None)
@@ -164,6 +191,9 @@ def quantized_layer_reset_swaa(self: QuantizedLayer) -> None:
     if hasattr(self, 'recurrent_state'):
         self.recurrent_state = None
         self.recurrent_state_initialized = False
+    if hasattr(self, 'k_norm_cache'):
+        self.k_norm_cache = None
+        self.k_norm_cache_initialized = False
 
 
 def get_recurrent_state(self: CacheLayerMixin) -> torch.Tensor | tuple[torch.Tensor, ...] | None:
@@ -198,6 +228,72 @@ def is_recurrent_state_initialized(self: CacheLayerMixin) -> bool:
         `bool`: True if the recurrent state has been set, False otherwise.
     """
     return getattr(self, 'recurrent_state_initialized', False)
+
+
+# ============== k_norm Cache Methods ==============
+
+def get_k_norm_cache(self: CacheLayerMixin) -> torch.Tensor | None:
+    """
+    Get the k_norm cache for this cache layer.
+
+    Returns:
+        The k_norm cache tensor or None if not initialized.
+    """
+    return getattr(self, 'k_norm_cache', None)
+
+
+def set_k_norm_cache(
+    self: CacheLayerMixin,
+    k_norm: torch.Tensor | None
+) -> None:
+    """
+    Set the k_norm cache for this cache layer.
+
+    Args:
+        k_norm: The new k_norm tensor or None to clear.
+    """
+    self.k_norm_cache = k_norm
+    self.k_norm_cache_initialized = k_norm is not None
+
+
+def is_k_norm_cache_initialized(self: CacheLayerMixin) -> bool:
+    """
+    Check if the k_norm cache has been initialized.
+
+    Returns:
+        `bool`: True if the k_norm cache has been set, False otherwise.
+    """
+    return getattr(self, 'k_norm_cache_initialized', False)
+
+
+def k_norm_update(
+    self: CacheLayerMixin,
+    k_norm: torch.Tensor | None,
+    cache_kwargs: dict[str, Any] | None = None,
+) -> torch.Tensor | None:
+    """
+    Update the k_norm cache in-place, and return the current k_norm value.
+
+    Args:
+        k_norm (`torch.Tensor`, *optional*):
+            The new k_norm value to cache. If None, no update is performed.
+        cache_kwargs (`dict[str, Any]`, *optional*):
+            Additional arguments for the cache (reserved for future use).
+
+    Returns:
+        `torch.Tensor` or `None`:
+            The current k_norm value after update (or before if no update).
+    """
+    # Lazy initialization: ensure k_norm_cache attribute exists
+    if not hasattr(self, 'k_norm_cache'):
+        _init_k_norm_cache(self)
+
+    # Update the k_norm cache if provided
+    if k_norm is not None:
+        self.k_norm_cache = k_norm
+        self.k_norm_cache_initialized = True
+
+    return self.k_norm_cache
 
 
 def state_update(
@@ -350,6 +446,84 @@ def cache_is_recurrent_state_initialized(
     return self.layers[layer_idx].is_recurrent_state_initialized()
 
 
+# ============== Cache-level k_norm Methods ==============
+
+def cache_k_norm_update(
+    self,
+    k_norm: torch.Tensor | None,
+    layer_idx: int,
+    cache_kwargs: dict[str, Any] | None = None,
+) -> torch.Tensor | None:
+    """
+    Update the k_norm cache for a specific layer in the cache.
+
+    Args:
+        k_norm (`torch.Tensor`, *optional*):
+            The new k_norm value to cache.
+        layer_idx (`int`):
+            The index of the layer to update.
+        cache_kwargs (`dict[str, Any]`, *optional*):
+            Additional arguments passed to the layer's k_norm_update method.
+
+    Returns:
+        `torch.Tensor` or `None`:
+            The k_norm value for the specified layer.
+    """
+    # Ensure layer exists (for lazy layer creation)
+    while len(self.layers) <= layer_idx:
+        if hasattr(self, 'layer_class_to_replicate'):
+            self.layers.append(self.layer_class_to_replicate())
+        else:
+            raise IndexError(f"Layer {layer_idx} does not exist and cannot be created lazily")
+
+    return self.layers[layer_idx].k_norm_update(k_norm, cache_kwargs)
+
+
+def cache_is_k_norm_cache_initialized(
+    self,
+    layer_idx: int,
+) -> bool:
+    """
+    Check if the k_norm cache for a specific layer has been initialized.
+
+    Args:
+        layer_idx (`int`):
+            The index of the layer to check.
+
+    Returns:
+        `bool`: True if the k_norm cache for the specified layer has been
+                initialized, False otherwise.
+    """
+    # If layer doesn't exist yet, it's not initialized
+    if layer_idx >= len(self.layers):
+        return False
+
+    return self.layers[layer_idx].is_k_norm_cache_initialized()
+
+
+def cache_get_k_norm_cache(
+    self,
+    layer_idx: int,
+) -> torch.Tensor | None:
+    """
+    Get the k_norm cache for a specific layer in the cache.
+
+    Args:
+        layer_idx (`int`):
+            The index of the layer to get the k_norm from.
+
+    Returns:
+        `torch.Tensor` or `None`:
+            The k_norm value for the specified layer, or None if not initialized
+            or the layer doesn't exist.
+    """
+    # If layer doesn't exist, return None
+    if layer_idx >= len(self.layers):
+        return None
+
+    return self.layers[layer_idx].get_k_norm_cache()
+
+
 def cache_get_recurrent_state(
     self,
     layer_idx: int,
@@ -456,7 +630,28 @@ def hack_kv_cache_recurrent_state():
     Cache.is_recurrent_state_initialized = cache_is_recurrent_state_initialized
     Cache.get_recurrent_state = cache_get_recurrent_state
 
-    print("Hacked transformers KV Cache layers to support recurrent state for linear attention.")
+    # Patch k_norm cache methods for Layer classes
+    DynamicLayer.get_k_norm_cache = get_k_norm_cache
+    DynamicLayer.set_k_norm_cache = set_k_norm_cache
+    DynamicLayer.k_norm_update = k_norm_update
+    DynamicLayer.is_k_norm_cache_initialized = is_k_norm_cache_initialized
+
+    DynamicSlidingWindowLayer.get_k_norm_cache = get_k_norm_cache
+    DynamicSlidingWindowLayer.set_k_norm_cache = set_k_norm_cache
+    DynamicSlidingWindowLayer.k_norm_update = k_norm_update
+    DynamicSlidingWindowLayer.is_k_norm_cache_initialized = is_k_norm_cache_initialized
+
+    QuantizedLayer.get_k_norm_cache = get_k_norm_cache
+    QuantizedLayer.set_k_norm_cache = set_k_norm_cache
+    QuantizedLayer.k_norm_update = k_norm_update
+    QuantizedLayer.is_k_norm_cache_initialized = is_k_norm_cache_initialized
+
+    # Patch k_norm cache methods for Cache class
+    Cache.k_norm_update = cache_k_norm_update
+    Cache.is_k_norm_cache_initialized = cache_is_k_norm_cache_initialized
+    Cache.get_k_norm_cache = cache_get_k_norm_cache
+
+    print("Hacked transformers KV Cache layers to support recurrent state and k_norm cache for linear attention.")
 
 
 def unhack_kv_cache_recurrent_state():
@@ -513,5 +708,22 @@ def unhack_kv_cache_recurrent_state():
         delattr(Cache, 'is_recurrent_state_initialized')
     if hasattr(Cache, 'get_recurrent_state'):
         delattr(Cache, 'get_recurrent_state')
+    if hasattr(Cache, 'k_norm_update'):
+        delattr(Cache, 'k_norm_update')
+    if hasattr(Cache, 'is_k_norm_cache_initialized'):
+        delattr(Cache, 'is_k_norm_cache_initialized')
+    if hasattr(Cache, 'get_k_norm_cache'):
+        delattr(Cache, 'get_k_norm_cache')
+
+    # Remove k_norm cache methods from layer classes
+    for layer_class in [DynamicLayer, DynamicSlidingWindowLayer, QuantizedLayer]:
+        if hasattr(layer_class, 'get_k_norm_cache'):
+            delattr(layer_class, 'get_k_norm_cache')
+        if hasattr(layer_class, 'set_k_norm_cache'):
+            delattr(layer_class, 'set_k_norm_cache')
+        if hasattr(layer_class, 'k_norm_update'):
+            delattr(layer_class, 'k_norm_update')
+        if hasattr(layer_class, 'is_k_norm_cache_initialized'):
+            delattr(layer_class, 'is_k_norm_cache_initialized')
 
     print("Restored original transformers KV Cache layer methods.")
