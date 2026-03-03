@@ -4,3 +4,5 @@
 .claude/*
 eval/evaluation.log
 eval/results/*
+__pycache__/test.cpython-312.pyc
+eval/scripts/__pycache__/run_ruler.cpython-312.pyc

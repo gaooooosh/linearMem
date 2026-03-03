@@ -27,7 +27,7 @@ def main():
     # 2. Model Configuration
     # =========================================================================
     model_name = "Qwen/Qwen3-1.7B"
-    device = "cuda:7" if torch.cuda.is_available() else "cpu"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     print(f"Loading model: {model_name}")
     print(f"Device: {device}")
@@ -57,6 +57,8 @@ def main():
     # - keep_first: 64 sink tokens at the beginning
     # - force_fa_decode: Use full attention during decoding
     # - non_sliding_layers: Layers that use full attention (every other layer)
+    # - flash_attn_weight: Weight for flash attention output (default: 0.9)
+    # - linear_mem_weight: Weight for linear memory output (default: 0.1)
     num_layers = model.config.num_hidden_layers
     non_sliding_layers = []  # Every other layer uses full attention
 
@@ -66,6 +68,8 @@ def main():
         force_fa_decode=False,
         non_sliding_layers=non_sliding_layers,
         enable_linear_mem=True,
+        flash_attn_weight=0.6,
+        linear_mem_weight=0.4,
     )
 
     # Attach SWAA config to model config
@@ -76,6 +80,9 @@ def main():
     print(f"  - keep_first: {swaa_config.keep_first}")
     print(f"  - force_fa_decode: {swaa_config.force_fa_decode}")
     print(f"  - non_sliding_layers: {swaa_config.non_sliding_layers}")
+    print(f"  - enable_linear_mem: {swaa_config.enable_linear_mem}")
+    print(f"  - flash_attn_weight: {swaa_config.flash_attn_weight}")
+    print(f"  - linear_mem_weight: {swaa_config.linear_mem_weight}")
     print(f"  - mark: {swaa_config.mark}")
     print("-" * 50)
 
@@ -83,9 +90,9 @@ def main():
     # 5. Test Inference
     # =========================================================================
     test_prompts = [
-        "Hello, who are you?",
-        "What is the capital of France?",
-        "Explain quantum computing in simple terms.",
+        "你好，你是谁?",
+        "法国的首都是哪里？",
+        "解释线性注意力机制。",
     ]
 
     for i, prompt in enumerate(test_prompts):

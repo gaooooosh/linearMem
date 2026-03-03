@@ -243,6 +243,8 @@ def attention_forward_swaa(
     force_fa_decode=swaa_config.force_fa_decode
     keep_first=swaa_config.keep_first
     enable_linear_mem=swaa_config.enable_linear_mem
+    flash_attn_weight=swaa_config.flash_attn_weight
+    linear_mem_weight=swaa_config.linear_mem_weight
 
     # Disable sliding window if the current layer is in non_sliding_layers
     if int(self.layer_idx) in non_sliding_layers:
@@ -406,7 +408,7 @@ def attention_forward_swaa(
         # ✨ 优化: 使用原地操作进行混合输出
         # 性能提升: 2.7x 加速 (62.4% 提升)
         attn_output = attn_output.reshape(*input_shape, -1)
-        attn_output.mul_(0.9).add_(o_linear, alpha=0.1)
+        attn_output.mul_(flash_attn_weight).add_(o_linear, alpha=linear_mem_weight)
     else:
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 

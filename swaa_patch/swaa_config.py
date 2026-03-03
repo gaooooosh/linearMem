@@ -25,6 +25,14 @@ class SWAAConfig:
         default=True,
         metadata={"help": "Whether to enable linear memory operations for attention computation."}
     )
+    flash_attn_weight: float = field(
+        default=0.9,
+        metadata={"help": "Weight for flash attention output in hybrid attention (default: 0.9)."}
+    )
+    linear_mem_weight: float = field(
+        default=0.1,
+        metadata={"help": "Weight for linear memory output in hybrid attention (default: 0.1)."}
+    )
 
     @property
     def mark(self):
@@ -69,5 +77,7 @@ class SWAAConfig:
             'keep_first': self.keep_first,
             'force_fa_decode': self.force_fa_decode,
             'non_sliding_layers': list(self.non_sliding_layers),
-            'enable_linear_mem': self.enable_linear_mem
+            'enable_linear_mem': self.enable_linear_mem,
+            'flash_attn_weight': self.flash_attn_weight,
+            'linear_mem_weight': self.linear_mem_weight
         }

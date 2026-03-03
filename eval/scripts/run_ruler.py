@@ -108,8 +108,6 @@ def run_ruler_evaluation(args):
         "max_chunk_size": args.max_chunk_size,
     }
 
-    model_args_str = ",".join([f"{k}={v}" for k, v in model_args.items()])
-
     # 生成参数
     gen_kwargs = {
         "max_gen_toks": 128,
@@ -117,10 +115,17 @@ def run_ruler_evaluation(args):
         "top_p": 1.0,
         "until": ["\n", "</s>", "###"],
     }
-    gen_kwargs_str = ",".join([f"{k}={v}" for k, v in gen_kwargs.items()])
 
-    print(f"\n🤖 模型参数: {model_args_str}")
-    print(f"\n🔧 生成参数: {gen_kwargs_str}")
+    print(f"\n🤖 模型参数:")
+    for k, v in model_args.items():
+        print(f"   {k}: {v}")
+
+    print(f"\n📊 RULER 测试配置:")
+    print(f"   测试长度: {args.context_length} tokens ({args.context_length//1024}K)")
+
+    print(f"\n🔧 生成参数:")
+    for k, v in gen_kwargs.items():
+        print(f"   {k}: {v}")
 
     # 设置输出目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -159,16 +164,27 @@ def run_ruler_evaluation(args):
 
     # 运行评测
     try:
+        # 构建传递给 RULER 任务的 metadata
+        # metadata 会被传递给 custom_dataset 函数（如 niah_single_1）
+        # 注意：
+        # 1. max_seq_lengths 使用元组（可哈希），因为 @cache 装饰器要求参数可哈希
+        # 2. 只传递 tokenizer 需要的参数，避免传递不可哈希的列表参数
+        metadata = {
+            "max_seq_lengths": (args.context_length,),  # 使用元组而不是列表
+            "pretrained": args.model,  # tokenizer 只需要这个参数
+        }
+
         results = evaluator.simple_evaluate(
             model="swaa_hf",
-            model_args=model_args_str,
+            model_args=model_args,
             tasks=RULER_TASKS,
             num_fewshot=0,
             batch_size=batch_size,
             device=args.device,
             limit=args.limit,
-            gen_kwargs=gen_kwargs_str,
+            gen_kwargs=gen_kwargs,
             log_samples=False,
+            metadata=metadata,  # 通过 metadata 传递测试长度
         )
 
         # 添加配置信息到结果
