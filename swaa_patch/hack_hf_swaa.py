@@ -379,8 +379,7 @@ def attention_forward_swaa(
             output_final_state=True,
             **kwargs,
         )
-        # ✨ 优化: 使用 KV Cache 缓存的归一化权重
-        # 性能提升: 18.7x 加速 (94.6% 提升)
+
         if past_key_values is not None:
             # 使用 KV Cache 存储 k_norm
             if not past_key_values.is_k_norm_cache_initialized(self.layer_idx):

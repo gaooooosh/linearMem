@@ -69,6 +69,8 @@ def run_ruler_evaluation(args):
         "keep_first": args.keep_first,
         "enable_linear_mem": args.enable_linear_mem,
         "non_sliding_layers": args.non_sliding_layers,
+        "flash_attn_weight": args.flash_attn_weight,
+        "linear_mem_weight": args.linear_mem_weight,
         "device": args.device,
         "dtype": args.dtype,
         "attn_implementation": args.attn,
@@ -85,6 +87,8 @@ def run_ruler_evaluation(args):
     print(f"  保留前N个token: {config['keep_first']}")
     print(f"  启用Linear Memory: {config['enable_linear_mem']}")
     print(f"  非滑动层: {config['non_sliding_layers']}")
+    print(f"  Flash Attention权重: {config['flash_attn_weight']}")
+    print(f"  Linear Memory权重: {config['linear_mem_weight']}")
     print(f"  设备: {config['device']}")
     print(f"  数据类型: {config['dtype']}")
     print(f"  注意力实现: {config['attn_implementation']}")
@@ -109,6 +113,8 @@ def run_ruler_evaluation(args):
         "non_sliding_layers": args.non_sliding_layers,
         "force_fa_decode": False,
         "max_chunk_size": args.max_chunk_size,
+        "flash_attn_weight": args.flash_attn_weight,
+        "linear_mem_weight": args.linear_mem_weight,
     }
 
     # 生成参数
@@ -247,6 +253,8 @@ def generate_report(results: dict, output_dir: Path, config: dict):
         f.write(f"| 保留前N个token | {config['keep_first']} |\n")
         f.write(f"| 启用Linear Memory | {config['enable_linear_mem']} |\n")
         f.write(f"| 非滑动层索引 | {config['non_sliding_layers']} |\n")
+        f.write(f"| Flash Attention权重 | {config['flash_attn_weight']} |\n")
+        f.write(f"| Linear Memory权重 | {config['linear_mem_weight']} |\n")
         f.write(f"| 设备 | {config['device']} |\n")
         f.write(f"| 数据类型 | {config['dtype']} |\n")
         f.write(f"| 注意力实现 | {config['attn_implementation']} |\n")
@@ -445,6 +453,18 @@ def main():
         type=int,
         default=2048,
         help="处理长序列的最大块大小 (默认: 2048)",
+    )
+    parser.add_argument(
+        "--flash-attn-weight",
+        type=float,
+        default=0.9,
+        help="混合注意力中 flash attention 输出的权重 (默认: 0.9)",
+    )
+    parser.add_argument(
+        "--linear-mem-weight",
+        type=float,
+        default=0.1,
+        help="混合注意力中 linear memory 输出的权重 (默认: 0.1)",
     )
 
     # 输出配置

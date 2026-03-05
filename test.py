@@ -27,7 +27,7 @@ def main():
     # 2. Model Configuration
     # =========================================================================
     model_name = "Qwen/Qwen3-1.7B"
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    device = "cuda:1" if torch.cuda.is_available() else "cpu"
 
     print(f"Loading model: {model_name}")
     print(f"Device: {device}")
@@ -68,8 +68,8 @@ def main():
         force_fa_decode=False,
         non_sliding_layers=non_sliding_layers,
         enable_linear_mem=True,
-        flash_attn_weight=0.6,
-        linear_mem_weight=0.4,
+        flash_attn_weight=1.0,
+        linear_mem_weight=0.5,
     )
 
     # Attach SWAA config to model config
@@ -91,8 +91,8 @@ def main():
     # =========================================================================
     test_prompts = [
         "你好，你是谁?",
-        "法国的首都是哪里？",
-        "解释线性注意力机制。",
+        # "法国的首都是哪里？",
+        # "解释线性注意力机制。",
     ]
 
     for i, prompt in enumerate(test_prompts):

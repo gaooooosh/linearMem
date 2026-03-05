@@ -67,6 +67,8 @@ class SWAAHFLM(LM):
         force_fa_decode: bool = False,
         non_sliding_layers: Optional[List[int]] = None,
         enable_linear_mem: bool = True,
+        flash_attn_weight: float = 0.9,
+        linear_mem_weight: float = 0.1,
         # Generation config
         batch_size: Optional[int] = None,
         max_length: int = 4096,
@@ -133,6 +135,8 @@ class SWAAHFLM(LM):
             force_fa_decode=force_fa_decode,
             non_sliding_layers=non_sliding_layers,
             enable_linear_mem=enable_linear_mem,
+            flash_attn_weight=flash_attn_weight,
+            linear_mem_weight=linear_mem_weight,
         )
         self.model.config.swaa_config = self.swaa_config
 
@@ -148,6 +152,8 @@ class SWAAHFLM(LM):
         print(f"  - force_fa_decode: {force_fa_decode}")
         print(f"  - non_sliding_layers: {non_sliding_layers}")
         print(f"  - enable_linear_mem: {enable_linear_mem}")
+        print(f"  - flash_attn_weight: {flash_attn_weight}")
+        print(f"  - linear_mem_weight: {linear_mem_weight}")
         print(f"{'='*60}\n")
 
         # Initialize fresh evaluation log
