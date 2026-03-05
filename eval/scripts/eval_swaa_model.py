@@ -22,7 +22,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from swaa_patch import SWAAConfig, hack_hf_swaa, hack_kv_cache_recurrent_state
-
+from swaa_patch.hashsim import make_hash_params
 # Global log file path
 EVAL_LOG_FILE = Path(__file__).parent.parent / "evaluation.log"
 
@@ -139,7 +139,17 @@ class SWAAHFLM(LM):
             linear_mem_weight=linear_mem_weight,
         )
         self.model.config.swaa_config = self.swaa_config
-
+        self.model.config.hashsim_config = make_hash_params(
+            num_heads=self.model.config.num_attention_heads,
+            head_dim=self.model.config.hidden_size // self.model.config.num_attention_heads,
+            r=4,
+            b=10,
+            eps=1e-6,
+            per_head_planes=True,
+            device=device,
+            dtype=torch.bfloat16,
+            seed=1234,
+        )
         print(f"\n{'='*60}")
         print(f"SWAA Model Loaded: {pretrained}")
         print(f"{'='*60}")

@@ -45,18 +45,33 @@ def _init_k_norm_cache(self: CacheLayerMixin) -> None:
         self.k_norm_cache_initialized = False
 
 
+def _init_hash_mem(self: CacheLayerMixin) -> None:
+    """Initialize the hash_mem container if not exists.
+
+    hash_mem structure: dict[int -> dict] where each dict contains:
+        - "S": Tensor with shape [B, H, R, M, D]
+        - "Z": Tensor with shape [B, H, R, M]
+    where H=num_heads, D=head_dim, R=hash tables, M=2^b buckets
+    """
+    if not hasattr(self, 'hash_mem') or self.hash_mem is None:
+        self.hash_mem = {}
+        self.hash_mem_initialized = False
+
+
 def dynamic_layer_lazy_init_swaa(
     self: DynamicLayer,
     key_states: torch.Tensor,
     value_states: torch.Tensor
 ) -> None:
-    """Patched lazy_initialization that also initializes recurrent state and k_norm cache."""
+    """Patched lazy_initialization that also initializes recurrent state, k_norm cache, and hash_mem."""
     # Call original initialization
     _original_dynamic_layer_lazy_init(self, key_states, value_states)
     # Initialize recurrent state container
     _init_recurrent_state(self)
     # Initialize k_norm cache container
     _init_k_norm_cache(self)
+    # Initialize hash_mem container
+    _init_hash_mem(self)
 
 
 def dynamic_layer_update_swaa(
@@ -89,6 +104,10 @@ def dynamic_layer_update_swaa(
     if not hasattr(self, 'k_norm_cache'):
         _init_k_norm_cache(self)
 
+    # Lazy initialization for hash_mem
+    if not hasattr(self, 'hash_mem'):
+        _init_hash_mem(self)
+
     # Handle recurrent state update from cache_kwargs
     if cache_kwargs is not None:
         new_recurrent_state = cache_kwargs.get('recurrent_state', None)
@@ -100,7 +119,7 @@ def dynamic_layer_update_swaa(
 
 
 def dynamic_layer_reset_swaa(self: DynamicLayer) -> None:
-    """Patched reset that also clears recurrent state and k_norm cache."""
+    """Patched reset that also clears recurrent state, k_norm cache, and hash_mem."""
     _original_dynamic_layer_reset(self)
     if hasattr(self, 'recurrent_state'):
         self.recurrent_state = None
@@ -108,6 +127,9 @@ def dynamic_layer_reset_swaa(self: DynamicLayer) -> None:
     if hasattr(self, 'k_norm_cache'):
         self.k_norm_cache = None
         self.k_norm_cache_initialized = False
+    if hasattr(self, 'hash_mem'):
+        self.hash_mem = {}
+        self.hash_mem_initialized = False
 
 
 def sliding_layer_lazy_init_swaa(
@@ -119,6 +141,7 @@ def sliding_layer_lazy_init_swaa(
     _original_sliding_layer_lazy_init(self, key_states, value_states)
     _init_recurrent_state(self)
     _init_k_norm_cache(self)
+    _init_hash_mem(self)
 
 
 def sliding_layer_update_swaa(
@@ -127,12 +150,15 @@ def sliding_layer_update_swaa(
     value_states: torch.Tensor,
     cache_kwargs: dict[str, Any] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Patched update for DynamicSlidingWindowLayer with recurrent state and k_norm cache support."""
+    """Patched update for DynamicSlidingWindowLayer with recurrent state, k_norm cache, and hash_mem support."""
     if not hasattr(self, 'recurrent_state'):
         _init_recurrent_state(self)
 
     if not hasattr(self, 'k_norm_cache'):
         _init_k_norm_cache(self)
+
+    if not hasattr(self, 'hash_mem'):
+        _init_hash_mem(self)
 
     if cache_kwargs is not None:
         new_recurrent_state = cache_kwargs.get('recurrent_state', None)
@@ -151,6 +177,9 @@ def sliding_layer_reset_swaa(self: DynamicSlidingWindowLayer) -> None:
     if hasattr(self, 'k_norm_cache'):
         self.k_norm_cache = None
         self.k_norm_cache_initialized = False
+    if hasattr(self, 'hash_mem'):
+        self.hash_mem = {}
+        self.hash_mem_initialized = False
 
 
 def quantized_layer_lazy_init_swaa(
@@ -162,6 +191,7 @@ def quantized_layer_lazy_init_swaa(
     _original_quantized_layer_lazy_init(self, key_states, value_states)
     _init_recurrent_state(self)
     _init_k_norm_cache(self)
+    _init_hash_mem(self)
 
 
 def quantized_layer_update_swaa(
@@ -170,12 +200,15 @@ def quantized_layer_update_swaa(
     value_states: torch.Tensor,
     cache_kwargs: dict[str, Any] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Patched update for QuantizedLayer with recurrent state and k_norm cache support."""
+    """Patched update for QuantizedLayer with recurrent state, k_norm cache, and hash_mem support."""
     if not hasattr(self, 'recurrent_state'):
         _init_recurrent_state(self)
 
     if not hasattr(self, 'k_norm_cache'):
         _init_k_norm_cache(self)
+
+    if not hasattr(self, 'hash_mem'):
+        _init_hash_mem(self)
 
     if cache_kwargs is not None:
         new_recurrent_state = cache_kwargs.get('recurrent_state', None)
@@ -194,6 +227,9 @@ def quantized_layer_reset_swaa(self: QuantizedLayer) -> None:
     if hasattr(self, 'k_norm_cache'):
         self.k_norm_cache = None
         self.k_norm_cache_initialized = False
+    if hasattr(self, 'hash_mem'):
+        self.hash_mem = {}
+        self.hash_mem_initialized = False
 
 
 def get_recurrent_state(self: CacheLayerMixin) -> torch.Tensor | tuple[torch.Tensor, ...] | None:
@@ -264,6 +300,171 @@ def is_k_norm_cache_initialized(self: CacheLayerMixin) -> bool:
         `bool`: True if the k_norm cache has been set, False otherwise.
     """
     return getattr(self, 'k_norm_cache_initialized', False)
+
+
+# ============== Hash State Methods ==============
+
+def get_hash_state(
+    self: CacheLayerMixin,
+    layer_idx: int | None = None
+) -> dict[str, torch.Tensor] | None:
+    """
+    Get the hash state for this cache layer.
+
+    Args:
+        layer_idx: The layer index to get hash state for.
+                   If None, uses the layer's own hash_mem.
+
+    Returns:
+        dict with keys "S" and "Z", or None if not initialized.
+        - S: Tensor with shape [B, H, R, M, D]
+        - Z: Tensor with shape [B, H, R, M]
+    """
+    if not hasattr(self, 'hash_mem'):
+        _init_hash_mem(self)
+
+    if layer_idx is None:
+        # For single-layer access (deprecated, use layer_idx in Cache)
+        return self.hash_mem if self.hash_mem else None
+
+    return self.hash_mem.get(layer_idx, None)
+
+
+def set_hash_state(
+    self: CacheLayerMixin,
+    layer_idx: int,
+    state_dict: dict[str, torch.Tensor] | None
+) -> None:
+    """
+    Set the hash state for a specific layer index.
+
+    Args:
+        layer_idx: The layer index to set hash state for.
+        state_dict: dict with keys "S" and "Z", or None to clear.
+            - S: Tensor with shape [B, H, R, M, D]
+            - Z: Tensor with shape [B, H, R, M]
+    """
+    if not hasattr(self, 'hash_mem'):
+        _init_hash_mem(self)
+
+    if state_dict is None:
+        if layer_idx in self.hash_mem:
+            del self.hash_mem[layer_idx]
+    else:
+        self.hash_mem[layer_idx] = state_dict
+        self.hash_mem_initialized = True
+
+
+def is_hash_state_initialized(
+    self: CacheLayerMixin,
+    layer_idx: int | None = None
+) -> bool:
+    """
+    Check if the hash state has been initialized for a specific layer.
+
+    Args:
+        layer_idx: The layer index to check. If None, checks the overall flag.
+
+    Returns:
+        `bool`: True if the hash state has been set, False otherwise.
+    """
+    if not hasattr(self, 'hash_mem'):
+        return False
+
+    if layer_idx is None:
+        return getattr(self, 'hash_mem_initialized', False)
+
+    return layer_idx in self.hash_mem
+
+
+def clear_hash_state(
+    self: CacheLayerMixin,
+    layer_idx: int | None = None
+) -> None:
+    """
+    Clear the hash state for a specific layer or all layers.
+
+    Args:
+        layer_idx: The layer index to clear. If None, clears all hash states.
+    """
+    if not hasattr(self, 'hash_mem'):
+        return
+
+    if layer_idx is None:
+        self.hash_mem = {}
+        self.hash_mem_initialized = False
+    elif layer_idx in self.hash_mem:
+        del self.hash_mem[layer_idx]
+
+
+def hash_state_update(
+    self: CacheLayerMixin,
+    layer_idx: int,
+    new_state: dict[str, torch.Tensor] | None = None,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
+) -> dict[str, torch.Tensor] | None:
+    """
+    Update the hash state for a specific layer and return the current state.
+
+    This method mirrors the style of `k_norm_update()` for consistent API.
+
+    Args:
+        layer_idx (`int`):
+            The layer index to update.
+        new_state (`dict[str, torch.Tensor]`, *optional*):
+            The new hash state dict with keys "S" and "Z".
+            If None, no update is performed, just retrieval.
+        device (`torch.device`, *optional*):
+            Target device to align tensors. If state exists and device differs,
+            tensors will be moved to this device.
+        dtype (`torch.dtype`, *optional*):
+            Target dtype to align tensors. If state exists and dtype differs,
+            tensors will be cast to this dtype.
+
+    Returns:
+        `dict[str, torch.Tensor]` or `None`:
+            The current hash state after update (or before if no update).
+            Tensors are aligned to device/dtype if specified.
+
+    Example:
+        ```python
+        # First call: set initial state
+        state = cache.hash_state_update(0, {"S": S_tensor, "Z": Z_tensor})
+
+        # Subsequent calls: update and get
+        new_state = cache.hash_state_update(0, {"S": new_S, "Z": new_Z})
+
+        # Just retrieve without update
+        state = cache.hash_state_update(0)
+
+        # With device/dtype alignment
+        state = cache.hash_state_update(0, device=query.device, dtype=query.dtype)
+        ```
+    """
+    if not hasattr(self, 'hash_mem'):
+        _init_hash_mem(self)
+
+    # Update the hash state if provided
+    if new_state is not None:
+        self.hash_mem[layer_idx] = new_state
+        self.hash_mem_initialized = True
+
+    # Retrieve current state
+    state = self.hash_mem.get(layer_idx, None)
+
+    # Align device/dtype if requested and state exists
+    if state is not None and (device is not None or dtype is not None):
+        aligned_state = {}
+        for key, tensor in state.items():
+            if device is not None and tensor.device != device:
+                tensor = tensor.to(device)
+            if dtype is not None and tensor.dtype != dtype:
+                tensor = tensor.to(dtype)
+            aligned_state[key] = tensor
+        return aligned_state
+
+    return state
 
 
 def k_norm_update(
@@ -570,9 +771,151 @@ def cache_get_recurrent_state(
     return self.layers[layer_idx].get_recurrent_state()
 
 
+# ============== Cache-level Hash State Methods ==============
+
+def cache_get_hash_state(
+    self,
+    layer_idx: int,
+) -> dict[str, torch.Tensor] | None:
+    """
+    Get the hash state for a specific layer in the cache.
+
+    Args:
+        layer_idx (`int`):
+            The index of the layer to get the hash state from.
+
+    Returns:
+        `dict[str, torch.Tensor]` or `None`:
+            The hash state dict with keys "S" and "Z" for the specified layer,
+            or None if not initialized or the layer doesn't exist.
+    """
+    # If layer doesn't exist, return None
+    if layer_idx >= len(self.layers):
+        return None
+
+    return self.layers[layer_idx].get_hash_state(layer_idx)
+
+
+def cache_set_hash_state(
+    self,
+    layer_idx: int,
+    state_dict: dict[str, torch.Tensor] | None
+) -> None:
+    """
+    Set the hash state for a specific layer in the cache.
+
+    Args:
+        layer_idx (`int`):
+            The index of the layer to set the hash state for.
+        state_dict (`dict[str, torch.Tensor]` or `None`):
+            The hash state dict with keys "S" and "Z", or None to clear.
+    """
+    # Ensure layer exists (for lazy layer creation)
+    while len(self.layers) <= layer_idx:
+        if hasattr(self, 'layer_class_to_replicate'):
+            self.layers.append(self.layer_class_to_replicate())
+        else:
+            raise IndexError(f"Layer {layer_idx} does not exist and cannot be created lazily")
+
+    self.layers[layer_idx].set_hash_state(layer_idx, state_dict)
+
+
+def cache_is_hash_state_initialized(
+    self,
+    layer_idx: int,
+) -> bool:
+    """
+    Check if the hash state for a specific layer has been initialized.
+
+    Args:
+        layer_idx (`int`):
+            The index of the layer to check.
+
+    Returns:
+        `bool`: True if the hash state for the specified layer has been
+                initialized, False otherwise.
+    """
+    # If layer doesn't exist yet, it's not initialized
+    if layer_idx >= len(self.layers):
+        return False
+
+    return self.layers[layer_idx].is_hash_state_initialized(layer_idx)
+
+
+def cache_clear_hash_state(
+    self,
+    layer_idx: int | None = None
+) -> None:
+    """
+    Clear the hash state for a specific layer or all layers.
+
+    Args:
+        layer_idx (`int`, *optional*):
+            The index of the layer to clear. If None, clears all layers.
+    """
+    if layer_idx is None:
+        # Clear all layers
+        for layer in self.layers:
+            layer.clear_hash_state()
+    elif layer_idx < len(self.layers):
+        # Clear specific layer
+        self.layers[layer_idx].clear_hash_state(layer_idx)
+
+
+def cache_hash_state_update(
+    self,
+    layer_idx: int,
+    new_state: dict[str, torch.Tensor] | None = None,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
+) -> dict[str, torch.Tensor] | None:
+    """
+    Update the hash state for a specific layer and return the current state.
+
+    This method provides a layer-indexed interface similar to `k_norm_update()`.
+
+    Args:
+        layer_idx (`int`):
+            The index of the layer to update.
+        new_state (`dict[str, torch.Tensor]`, *optional*):
+            The new hash state dict with keys "S" and "Z".
+            If None, no update is performed, just retrieval.
+        device (`torch.device`, *optional*):
+            Target device to align tensors.
+        dtype (`torch.dtype`, *optional*):
+            Target dtype to align tensors.
+
+    Returns:
+        `dict[str, torch.Tensor]` or `None`:
+            The hash state for the specified layer after update,
+            with tensors aligned to device/dtype if specified.
+
+    Example:
+        ```python
+        # First call: initialize
+        state = cache.hash_state_update(0, {"S": S_tensor, "Z": Z_tensor})
+
+        # Subsequent calls: update and get
+        state = cache.hash_state_update(0, {"S": new_S, "Z": new_Z})
+
+        # Just retrieve without update, with device alignment
+        state = cache.hash_state_update(0, device=query.device, dtype=query.dtype)
+        ```
+    """
+    # Ensure layer exists (for lazy layer creation)
+    while len(self.layers) <= layer_idx:
+        if hasattr(self, 'layer_class_to_replicate'):
+            self.layers.append(self.layer_class_to_replicate())
+        else:
+            raise IndexError(f"Layer {layer_idx} does not exist and cannot be created lazily")
+
+    return self.layers[layer_idx].hash_state_update(layer_idx, new_state, device, dtype)
+
+
 def hack_kv_cache_recurrent_state():
     """
-    Apply monkey patch to transformers KV Cache layers to support recurrent state.
+    Apply monkey patch to transformers KV Cache layers to support recurrent state,
+    k_norm cache, and hash state.
 
     This patches the following classes:
     - DynamicLayer
@@ -588,13 +931,34 @@ def hack_kv_cache_recurrent_state():
     - `state_update(state, cache_kwargs)` method to update and return state
     - `is_recurrent_state_initialized()` method to check initialization status
 
+    - `k_norm_cache` attribute for storing key norm values
+    - `k_norm_cache_initialized` attribute (bool) indicating if cache has been set
+    - `get_k_norm_cache()` method to retrieve the cache
+    - `set_k_norm_cache(k_norm)` method to set the cache
+    - `k_norm_update(k_norm, cache_kwargs)` method to update and return cache
+    - `is_k_norm_cache_initialized()` method to check initialization status
+
+    - `hash_mem` attribute for storing hash state (dict[int -> dict])
+    - `hash_mem_initialized` attribute (bool) indicating if state has been set
+    - `get_hash_state(layer_idx)` method to retrieve hash state
+    - `set_hash_state(layer_idx, state_dict)` method to set hash state
+    - `is_hash_state_initialized(layer_idx)` method to check initialization status
+    - `clear_hash_state(layer_idx)` method to clear hash state
+    - `hash_state_update(layer_idx, new_state, device, dtype)` method to update and return state
+
     The Cache class will have:
     - `state_update(state, layer_idx, cache_kwargs)` method for layer-indexed updates
+    - `k_norm_update(k_norm, layer_idx, cache_kwargs)` method for layer-indexed k_norm updates
+    - `get_hash_state(layer_idx)` method for layer-indexed hash state retrieval
+    - `set_hash_state(layer_idx, state_dict)` method for layer-indexed hash state setting
+    - `is_hash_state_initialized(layer_idx)` method for layer-indexed hash state check
+    - `clear_hash_state(layer_idx)` method for layer-indexed hash state clearing
+    - `hash_state_update(layer_idx, new_state, device, dtype)` method for layer-indexed hash state update
 
-    The recurrent state is automatically managed during:
-    - lazy_initialization: Creates empty state container with initialized=False
+    The recurrent state, k_norm cache, and hash state are automatically managed during:
+    - lazy_initialization: Creates empty containers with initialized=False
     - update: Accepts recurrent_state via cache_kwargs, sets initialized=True
-    - reset: Clears the recurrent state and sets initialized=False
+    - reset: Clears the state and sets initialized=False
     """
     from transformers.cache_utils import Cache
 
@@ -651,7 +1015,33 @@ def hack_kv_cache_recurrent_state():
     Cache.is_k_norm_cache_initialized = cache_is_k_norm_cache_initialized
     Cache.get_k_norm_cache = cache_get_k_norm_cache
 
-    print("Hacked transformers KV Cache layers to support recurrent state and k_norm cache for linear attention.")
+    # Patch hash state methods for Layer classes
+    DynamicLayer.get_hash_state = get_hash_state
+    DynamicLayer.set_hash_state = set_hash_state
+    DynamicLayer.is_hash_state_initialized = is_hash_state_initialized
+    DynamicLayer.clear_hash_state = clear_hash_state
+    DynamicLayer.hash_state_update = hash_state_update
+
+    DynamicSlidingWindowLayer.get_hash_state = get_hash_state
+    DynamicSlidingWindowLayer.set_hash_state = set_hash_state
+    DynamicSlidingWindowLayer.is_hash_state_initialized = is_hash_state_initialized
+    DynamicSlidingWindowLayer.clear_hash_state = clear_hash_state
+    DynamicSlidingWindowLayer.hash_state_update = hash_state_update
+
+    QuantizedLayer.get_hash_state = get_hash_state
+    QuantizedLayer.set_hash_state = set_hash_state
+    QuantizedLayer.is_hash_state_initialized = is_hash_state_initialized
+    QuantizedLayer.clear_hash_state = clear_hash_state
+    QuantizedLayer.hash_state_update = hash_state_update
+
+    # Patch hash state methods for Cache class
+    Cache.get_hash_state = cache_get_hash_state
+    Cache.set_hash_state = cache_set_hash_state
+    Cache.is_hash_state_initialized = cache_is_hash_state_initialized
+    Cache.clear_hash_state = cache_clear_hash_state
+    Cache.hash_state_update = cache_hash_state_update
+
+    print("Hacked transformers KV Cache layers to support recurrent state, k_norm cache, and hash state for linear attention.")
 
 
 def unhack_kv_cache_recurrent_state():
@@ -714,6 +1104,16 @@ def unhack_kv_cache_recurrent_state():
         delattr(Cache, 'is_k_norm_cache_initialized')
     if hasattr(Cache, 'get_k_norm_cache'):
         delattr(Cache, 'get_k_norm_cache')
+    if hasattr(Cache, 'get_hash_state'):
+        delattr(Cache, 'get_hash_state')
+    if hasattr(Cache, 'set_hash_state'):
+        delattr(Cache, 'set_hash_state')
+    if hasattr(Cache, 'is_hash_state_initialized'):
+        delattr(Cache, 'is_hash_state_initialized')
+    if hasattr(Cache, 'clear_hash_state'):
+        delattr(Cache, 'clear_hash_state')
+    if hasattr(Cache, 'hash_state_update'):
+        delattr(Cache, 'hash_state_update')
 
     # Remove k_norm cache methods from layer classes
     for layer_class in [DynamicLayer, DynamicSlidingWindowLayer, QuantizedLayer]:
@@ -725,5 +1125,18 @@ def unhack_kv_cache_recurrent_state():
             delattr(layer_class, 'k_norm_update')
         if hasattr(layer_class, 'is_k_norm_cache_initialized'):
             delattr(layer_class, 'is_k_norm_cache_initialized')
+
+    # Remove hash state methods from layer classes
+    for layer_class in [DynamicLayer, DynamicSlidingWindowLayer, QuantizedLayer]:
+        if hasattr(layer_class, 'get_hash_state'):
+            delattr(layer_class, 'get_hash_state')
+        if hasattr(layer_class, 'set_hash_state'):
+            delattr(layer_class, 'set_hash_state')
+        if hasattr(layer_class, 'is_hash_state_initialized'):
+            delattr(layer_class, 'is_hash_state_initialized')
+        if hasattr(layer_class, 'clear_hash_state'):
+            delattr(layer_class, 'clear_hash_state')
+        if hasattr(layer_class, 'hash_state_update'):
+            delattr(layer_class, 'hash_state_update')
 
     print("Restored original transformers KV Cache layer methods.")
