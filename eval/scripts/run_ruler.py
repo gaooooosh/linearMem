@@ -71,6 +71,7 @@ def run_ruler_evaluation(args):
         "non_sliding_layers": args.non_sliding_layers,
         "flash_attn_weight": args.flash_attn_weight,
         "linear_mem_weight": args.linear_mem_weight,
+        "linear_mem_mode": args.linear_mem_mode,
         "device": args.device,
         "dtype": args.dtype,
         "attn_implementation": args.attn,
@@ -89,6 +90,7 @@ def run_ruler_evaluation(args):
     print(f"  非滑动层: {config['non_sliding_layers']}")
     print(f"  Flash Attention权重: {config['flash_attn_weight']}")
     print(f"  Linear Memory权重: {config['linear_mem_weight']}")
+    print(f"  Linear Memory模式: {config['linear_mem_mode']}")
     print(f"  设备: {config['device']}")
     print(f"  数据类型: {config['dtype']}")
     print(f"  注意力实现: {config['attn_implementation']}")
@@ -115,6 +117,7 @@ def run_ruler_evaluation(args):
         "max_chunk_size": args.max_chunk_size,
         "flash_attn_weight": args.flash_attn_weight,
         "linear_mem_weight": args.linear_mem_weight,
+        "linear_mem_mode": args.linear_mem_mode,
     }
 
     # 生成参数
@@ -255,6 +258,7 @@ def generate_report(results: dict, output_dir: Path, config: dict):
         f.write(f"| 非滑动层索引 | {config['non_sliding_layers']} |\n")
         f.write(f"| Flash Attention权重 | {config['flash_attn_weight']} |\n")
         f.write(f"| Linear Memory权重 | {config['linear_mem_weight']} |\n")
+        f.write(f"| Linear Memory模式 | {config['linear_mem_mode']} |\n")
         f.write(f"| 设备 | {config['device']} |\n")
         f.write(f"| 数据类型 | {config['dtype']} |\n")
         f.write(f"| 注意力实现 | {config['attn_implementation']} |\n")
@@ -465,6 +469,13 @@ def main():
         type=float,
         default=0.1,
         help="混合注意力中 linear memory 输出的权重 (默认: 0.1)",
+    )
+    parser.add_argument(
+        "--linear-mem-mode",
+        type=str,
+        default="fused_recurrent",
+        choices=["fused_recurrent", "fused_chunk", "chunk"],
+        help="Linear Memory 操作模式 (默认: fused_recurrent)",
     )
 
     # 输出配置

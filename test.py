@@ -70,6 +70,7 @@ def main():
         enable_linear_mem=True,
         flash_attn_weight=1.0,
         linear_mem_weight=0.5,
+        # linear_mem_mode="fused_chunk",
     )
 
     # Attach SWAA config to model config
@@ -91,8 +92,8 @@ def main():
     # =========================================================================
     test_prompts = [
         "你好，你是谁?",
-        # "法国的首都是哪里？",
-        # "解释线性注意力机制。",
+        "法国的首都是哪里？",
+        "解释线性注意力机制。",
     ]
 
     for i, prompt in enumerate(test_prompts):

@@ -33,6 +33,10 @@ class SWAAConfig:
         default=0.1,
         metadata={"help": "Weight for linear memory output in hybrid attention (default: 0.1)."}
     )
+    linear_mem_mode: str = field(
+        default='fused_recurrent',
+        metadata={"help": "Linear memory operation mode. Options: 'fused_recurrent', 'fused_chunk', 'chunk' (default: fused_recurrent)."}
+    )
 
     @property
     def mark(self):
@@ -79,5 +83,6 @@ class SWAAConfig:
             'non_sliding_layers': list(self.non_sliding_layers),
             'enable_linear_mem': self.enable_linear_mem,
             'flash_attn_weight': self.flash_attn_weight,
-            'linear_mem_weight': self.linear_mem_weight
+            'linear_mem_weight': self.linear_mem_weight,
+            'linear_mem_mode': self.linear_mem_mode
         }

@@ -168,9 +168,6 @@ def linear_mem_ops(
             indices, cu_seqlens, _ = get_unpad_data(attention_mask[:, -q_len:])
             # hidden_states = index_first_axis(rearrange(q, "b s ... -> (b s) ..."), indices).unsqueeze(0)
 
-        last_state = None
-        # if past_key_values is not None and len(past_key_values) > self.layer_idx:
-        #     last_state = past_key_values[self.layer_idx]
 
         # Handle GQA: expand k, v to match q's number of heads
         # q shape: (batch, num_heads, seq, head_dim)
@@ -191,6 +188,8 @@ def linear_mem_ops(
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
+                normalize=False,
+                scale=0.9
             )
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_linear_attn(
@@ -200,6 +199,7 @@ def linear_mem_ops(
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
+                normalize=False,
             )
         elif mode == 'chunk':
             o, recurrent_state = chunk_linear_attn(
@@ -209,6 +209,7 @@ def linear_mem_ops(
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
+                normalize=False,
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
@@ -218,6 +219,37 @@ def linear_mem_ops(
         o = o.transpose(1, 2)
         o = rearrange(o, '... h d -> ... (h d)')
         return o, recurrent_state
+
+def rms_norm_per_head(
+    x: torch.Tensor,
+    num_heads: int,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Per-head RMSNorm without learnable params.
+
+    Args:
+        x: [B, T, H*D] or [B, T, H, D]
+        num_heads: H
+        eps: numerical stability
+
+    Returns:
+        normalized x, same shape as input
+    """
+    if x.dim() == 3:
+        B, T, HD = x.shape
+        assert HD % num_heads == 0, f"HD={HD} not divisible by num_heads={num_heads}"
+        head_dim = HD // num_heads
+        x4 = x.view(B, T, num_heads, head_dim)  # [B, T, H, D]
+        rms = torch.sqrt(x4.pow(2).mean(dim=-1, keepdim=True) + eps)  # [B, T, H, 1]
+        y4 = x4 / rms
+        return y4.view(B, T, HD)
+    elif x.dim() == 4:
+        # [B, T, H, D]
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)  # [B, T, H, 1]
+        return x / rms
+    else:
+        raise ValueError(f"Unsupported rank: {x.dim()}")
 
 
 def attention_forward_swaa(
@@ -245,6 +277,7 @@ def attention_forward_swaa(
     enable_linear_mem=swaa_config.enable_linear_mem
     flash_attn_weight=swaa_config.flash_attn_weight
     linear_mem_weight=swaa_config.linear_mem_weight
+    linear_mem_mode=swaa_config.linear_mem_mode
 
     # Disable sliding window if the current layer is in non_sliding_layers
     if int(self.layer_idx) in non_sliding_layers:
@@ -377,6 +410,7 @@ def attention_forward_swaa(
             initial_state=last_state,
             attention_mask=attention_mask,
             output_final_state=True,
+            mode=linear_mem_mode,
             **kwargs,
         )
 
@@ -400,7 +434,11 @@ def attention_forward_swaa(
             else:
                 k_norm = self._k_norm_cache[self.layer_idx]
 
-        o_linear = o / k_norm
+        o_linear = rms_norm_per_head(
+            o,
+            num_heads=query_states.shape[1],  # or num_attention_heads in your scope
+            eps=1e-6,
+        )
         if past_key_values is not None:
             past_key_values.state_update(h, self.layer_idx)
 
