@@ -12,7 +12,6 @@ This script demonstrates how to:
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from swaa_patch import SWAAConfig, hack_hf_swaa,hack_kv_cache_recurrent_state
-from swaa_patch.hashsim import init_hash_state,make_hash_params,hashmem_read_block,hashmem_write_block_functional,block_causal_hashmem
 
 
 
@@ -70,24 +69,13 @@ def main():
         force_fa_decode=False,
         non_sliding_layers=non_sliding_layers,
         enable_linear_mem=True,
-        flash_attn_weight=0.8,
-        linear_mem_weight=0.2,
+        flash_attn_weight=0.5,
+        linear_mem_weight=0.5,
         # linear_mem_mode="fused_chunk",
     )
 
     # Attach SWAA config to model config
     model.config.swaa_config = swaa_config
-    model.config.hashsim_config = make_hash_params(
-        num_heads=model.config.num_attention_heads,
-        head_dim=model.config.hidden_size // model.config.num_attention_heads,
-        r=4,
-        b=10,
-        eps=1e-6,
-        per_head_planes=True,
-        device=device,
-        dtype=torch.bfloat16,
-        seed=1234,
-    )
 
     print(f"SWAA Config:")
     print(f"  - sliding_window_size: {swaa_config.sliding_window_size}")

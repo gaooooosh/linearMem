@@ -27,7 +27,6 @@ import torch.nn.functional as F
 from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn, fused_recurrent_linear_attn
 from fla.layers.utils import get_unpad_data, index_first_axis, pad_input
 from .swaa_config import SWAAConfig
-from .hashsim import init_hash_state,make_hash_params,hashmem_read_block,hashmem_write_block_functional,block_causal_hashmem
 logger = logging.get_logger(__name__)
 
 def _lazy_define_process_function_swaa(flash_function):
@@ -403,73 +402,46 @@ def attention_forward_swaa(
 
     # ===================================================================#
     if enable_linear_mem:
-        hash_params = self.config.hashsim_config
-        if past_key_values is not None:
-            hash_state = past_key_values.get_hash_state(self.layer_idx)
-
-        if hash_state is None:
-            hash_state = init_hash_state(batch_size, hash_params=hash_params, device=query_states.device, dtype=query_states.dtype)
-        else:
-            # 对齐 device/dtype（必须做）
-            if hash_state["S"].device != query_states.device:
-                hash_state = {"S": hash_state["S"].to(query_states.device), "Z": hash_state["Z"].to(query_states.device)}
-            if hash_state["S"].dtype != query_states.dtype:
-                hash_state = {"S": hash_state["S"].to(query_states.dtype), "Z": hash_state["Z"].to(query_states.dtype)}
-        
-            # 4) 计算哈希记忆输出 + 更新后的 state（函数式返回）
-        o_hash, new_hash_state = block_causal_hashmem(
+        o,h = linear_mem_ops(
+            self,
             q=query_states,
             k=key_states_for_linear,
             v=value_states_for_linear,
-            state=hash_state,
-            hash_params=hash_params,
-            block_size=10,
-            weight=None,
-        )  # o_hash: [B,H,T,D]
+            initial_state=last_state,
+            attention_mask=attention_mask,
+            output_final_state=True,
+            mode=linear_mem_mode,
+            **kwargs,
+        )
+
         if past_key_values is not None:
-            past_key_values.set_hash_state(self.layer_idx, new_hash_state)
+            # 使用 KV Cache 存储 k_norm
+            if not past_key_values.is_k_norm_cache_initialized(self.layer_idx):
+                # 第一次计算
+                k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
+                past_key_values.k_norm_update(k_norm, self.layer_idx)
+            else:
+                # 使用缓存
+                k_norm = past_key_values.k_norm_update(None, self.layer_idx)
+        else:
+            # Fallback: 如果没有 cache，使用模型属性缓存
+            if not hasattr(self, '_k_norm_cache'):
+                self._k_norm_cache = {}
 
-        # o,h = linear_mem_ops(
-        #     self,
-        #     q=query_states,
-        #     k=key_states_for_linear,
-        #     v=value_states_for_linear,
-        #     initial_state=last_state,
-        #     attention_mask=attention_mask,
-        #     output_final_state=True,
-        #     mode=linear_mem_mode,
-        #     **kwargs,
-        # )
+            if self.layer_idx not in self._k_norm_cache:
+                k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
+                self._k_norm_cache[self.layer_idx] = k_norm
+            else:
+                k_norm = self._k_norm_cache[self.layer_idx]
 
-        # if past_key_values is not None:
-        #     # 使用 KV Cache 存储 k_norm
-        #     if not past_key_values.is_k_norm_cache_initialized(self.layer_idx):
-        #         # 第一次计算
-        #         k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
-        #         past_key_values.k_norm_update(k_norm, self.layer_idx)
-        #     else:
-        #         # 使用缓存
-        #         k_norm = past_key_values.k_norm_update(None, self.layer_idx)
-        # else:
-        #     # Fallback: 如果没有 cache，使用模型属性缓存
-        #     if not hasattr(self, '_k_norm_cache'):
-        #         self._k_norm_cache = {}
+        if past_key_values is not None:
+            past_key_values.state_update(h, self.layer_idx)
 
-        #     if self.layer_idx not in self._k_norm_cache:
-        #         k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
-        #         self._k_norm_cache[self.layer_idx] = k_norm
-        #     else:
-        #         k_norm = self._k_norm_cache[self.layer_idx]
-
-        # if past_key_values is not None:
-        #     past_key_values.state_update(h, self.layer_idx)
-
+        o_linear = o / k_norm
         # ✨ 优化: 使用原地操作进行混合输出
         # 性能提升: 2.7x 加速 (62.4% 提升)
         attn_output = attn_output.reshape(*input_shape, -1)
-        # o_hash: [B, H, T, D] -> [B, T, H, D] -> [B, T, H*D]
-        o_hash = o_hash.transpose(1, 2).reshape(*input_shape, -1)
-        attn_output.mul_(flash_attn_weight).add_(o_hash, alpha=linear_mem_weight)
+        attn_output.mul_(flash_attn_weight).add_(o_linear, alpha=linear_mem_weight)
     else:
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 
