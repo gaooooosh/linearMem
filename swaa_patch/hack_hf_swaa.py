@@ -27,6 +27,8 @@ import torch.nn.functional as F
 from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn, fused_recurrent_linear_attn
 from fla.layers.utils import get_unpad_data, index_first_axis, pad_input
 from .swaa_config import SWAAConfig
+
+from .kernel.AnchorKernel import AnchorKernel
 logger = logging.get_logger(__name__)
 
 def _lazy_define_process_function_swaa(flash_function):
@@ -147,6 +149,7 @@ def linear_mem_ops(
     last_state: Cache | None = None,
     use_cache: bool | None = False,
     mode: str | None = None,
+    kernel = None,
         **kwargs: Unpack[dict],
     ) -> tuple[torch.Tensor, torch.Tensor | None, Cache | None]:
         if attention_mask is not None:
@@ -160,7 +163,7 @@ def linear_mem_ops(
         _, _, k_len, head_k_dim = k.shape # shape (batch_size, num_attention_heads, seq_length, head_dim)
         num_kv_groups = num_attention_heads
         # mode = 'fused_recurrent' if mode is None else mode
-        mode = 'fused_recurrent' if q_len <= 64 else self.mode
+        mode = 'fused_recurrent' if q_len <= 64 else 'fused_chunk'
 
         cu_seqlens = kwargs.get('cu_seqlens')
         if attention_mask is not None:
@@ -180,6 +183,11 @@ def linear_mem_ops(
             v = v.unsqueeze(2).expand(-1, -1, num_kv_groups, -1, -1).reshape(batch_size, num_attention_heads, k_len, head_k_dim)
 
         recurrent_state = last_state
+
+        if kernel is not None:
+            q = kernel(q)
+            k = kernel(k)
+
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_linear_attn(
                 q=q,
@@ -188,8 +196,8 @@ def linear_mem_ops(
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
-                normalize=False,
-                scale=0.9
+                normalize=True,
+                scale= 1.0 
             )
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_linear_attn(
@@ -199,7 +207,8 @@ def linear_mem_ops(
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
-                normalize=False,
+                normalize=True,
+                scale = 1.0
             )
         elif mode == 'chunk':
             o, recurrent_state = chunk_linear_attn(
@@ -209,7 +218,8 @@ def linear_mem_ops(
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
-                normalize=False,
+                normalize=True,
+                scale = 1.0
             )
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
@@ -269,6 +279,7 @@ def attention_forward_swaa(
 
     # Extract sliding_window_size, keep_first, force_fa_decode, non_sliding_layers from self.config.swaa_config
     swaa_config:SWAAConfig = self.config.swaa_config if hasattr(self.config, "swaa_config") else SWAAConfig()
+    linear_kernel = self.config.kernel
 
     sliding_window_size=swaa_config.sliding_window_size
     non_sliding_layers=swaa_config.non_sliding_layers
@@ -411,33 +422,14 @@ def attention_forward_swaa(
             attention_mask=attention_mask,
             output_final_state=True,
             mode=linear_mem_mode,
+            kernel = linear_kernel,
             **kwargs,
         )
 
         if past_key_values is not None:
-            # 使用 KV Cache 存储 k_norm
-            if not past_key_values.is_k_norm_cache_initialized(self.layer_idx):
-                # 第一次计算
-                k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
-                past_key_values.k_norm_update(k_norm, self.layer_idx)
-            else:
-                # 使用缓存
-                k_norm = past_key_values.k_norm_update(None, self.layer_idx)
-        else:
-            # Fallback: 如果没有 cache，使用模型属性缓存
-            if not hasattr(self, '_k_norm_cache'):
-                self._k_norm_cache = {}
-
-            if self.layer_idx not in self._k_norm_cache:
-                k_norm = key_states_for_linear.norm(dim=-1).sum() + 1e-6
-                self._k_norm_cache[self.layer_idx] = k_norm
-            else:
-                k_norm = self._k_norm_cache[self.layer_idx]
-
-        if past_key_values is not None:
             past_key_values.state_update(h, self.layer_idx)
 
-        o_linear = o / k_norm
+        o_linear = o
         # ✨ 优化: 使用原地操作进行混合输出
         # 性能提升: 2.7x 加速 (62.4% 提升)
         attn_output = attn_output.reshape(*input_shape, -1)

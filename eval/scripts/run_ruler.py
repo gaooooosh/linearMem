@@ -42,16 +42,16 @@ from lm_eval.utils import make_table
 
 # RULER 任务列表
 RULER_TASKS = [
-    # "niah_single_1",
-    # "niah_single_2",
-    # "niah_single_3",
-    # "niah_multikey_1",
-    # "niah_multivalue",
-    # "niah_multiquery",
-    # "passkey",
-    # "ruler_vt",
-    # "ruler_cwe",
-    # "ruler_fwe",
+    "niah_single_1",
+    "niah_single_2",
+    "niah_single_3",
+    "niah_multikey_1",
+    "niah_multivalue",
+    "niah_multiquery",
+    "passkey",
+    "ruler_vt",
+    "ruler_cwe",
+    "ruler_fwe",
     "ruler_qa_hotpot"
 ]
 

@@ -12,7 +12,7 @@ This script demonstrates how to:
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from swaa_patch import SWAAConfig, hack_hf_swaa,hack_kv_cache_recurrent_state
-
+from swaa_patch.kernel.AnchorKernel import AnchorKernel
 
 
 def main():
@@ -28,7 +28,7 @@ def main():
     # 2. Model Configuration
     # =========================================================================
     model_name = "Qwen/Qwen3-1.7B"
-    device = "cuda:1" if torch.cuda.is_available() else "cpu"
+    device = "cuda:6" if torch.cuda.is_available() else "cpu"
 
     print(f"Loading model: {model_name}")
     print(f"Device: {device}")
@@ -65,18 +65,26 @@ def main():
 
     swaa_config = SWAAConfig(
         sliding_window_size=2048,
-        keep_first=4,
+        keep_first=16,
         force_fa_decode=False,
         non_sliding_layers=non_sliding_layers,
         enable_linear_mem=True,
-        flash_attn_weight=0.5,
-        linear_mem_weight=0.5,
-        # linear_mem_mode="fused_chunk",
+        flash_attn_weight=1.0,
+        linear_mem_weight=1.0,
+        linear_mem_mode="fused_chunk",
     )
 
+    linear_kernel = AnchorKernel(
+    head_dim=model.config.head_dim,
+    num_anchors=256,
+    tau=20.0,
+    learnable_anchors=False,
+    device=device,
+    dtype = torch.bfloat16
+)
     # Attach SWAA config to model config
     model.config.swaa_config = swaa_config
-
+    model.config.kernel = linear_kernel
     print(f"SWAA Config:")
     print(f"  - sliding_window_size: {swaa_config.sliding_window_size}")
     print(f"  - keep_first: {swaa_config.keep_first}")
@@ -115,7 +123,7 @@ def main():
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=128,
+                max_new_tokens=1024,
                 do_sample=True,
                 num_beams=1,
                 temperature=1.0,
