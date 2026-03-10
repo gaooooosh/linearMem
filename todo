@@ -1,1 +1,3 @@
 设计线性注意力算法部分，使得不会乱码
+
+pixi run eval/scripts/run_ruler.py --model Qwen/Qwen3-1.7B --context-length 16384 --keep-first 4 --max-chunk-size 8192 --sliding-window 4096 --device cuda:6 --flash-attn-weight 1.0 --linear-mem-weight 0.8 --linear-mem-mode fused_chunk

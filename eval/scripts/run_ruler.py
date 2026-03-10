@@ -73,6 +73,8 @@ def run_ruler_evaluation(args):
         "flash_attn_weight": args.flash_attn_weight,
         "linear_mem_weight": args.linear_mem_weight,
         "linear_mem_mode": args.linear_mem_mode,
+        "num_anchors": args.num_anchors,
+        "tau": args.tau,
         "device": args.device,
         "dtype": args.dtype,
         "attn_implementation": args.attn,
@@ -92,6 +94,8 @@ def run_ruler_evaluation(args):
     print(f"  Flash Attention权重: {config['flash_attn_weight']}")
     print(f"  Linear Memory权重: {config['linear_mem_weight']}")
     print(f"  Linear Memory模式: {config['linear_mem_mode']}")
+    print(f"  Anchor数量: {config['num_anchors']}")
+    print(f"  Anchor温度参数: {config['tau']}")
     print(f"  设备: {config['device']}")
     print(f"  数据类型: {config['dtype']}")
     print(f"  注意力实现: {config['attn_implementation']}")
@@ -119,6 +123,8 @@ def run_ruler_evaluation(args):
         "flash_attn_weight": args.flash_attn_weight,
         "linear_mem_weight": args.linear_mem_weight,
         "linear_mem_mode": args.linear_mem_mode,
+        "num_anchors": args.num_anchors,
+        "tau": args.tau,
     }
 
     # 生成参数
@@ -260,6 +266,8 @@ def generate_report(results: dict, output_dir: Path, config: dict):
         f.write(f"| Flash Attention权重 | {config['flash_attn_weight']} |\n")
         f.write(f"| Linear Memory权重 | {config['linear_mem_weight']} |\n")
         f.write(f"| Linear Memory模式 | {config['linear_mem_mode']} |\n")
+        f.write(f"| Anchor数量 | {config['num_anchors']} |\n")
+        f.write(f"| Anchor温度参数 | {config['tau']} |\n")
         f.write(f"| 设备 | {config['device']} |\n")
         f.write(f"| 数据类型 | {config['dtype']} |\n")
         f.write(f"| 注意力实现 | {config['attn_implementation']} |\n")
@@ -477,6 +485,18 @@ def main():
         default="fused_recurrent",
         choices=["fused_recurrent", "fused_chunk", "chunk"],
         help="Linear Memory 操作模式 (默认: fused_recurrent)",
+    )
+    parser.add_argument(
+        "--num-anchors",
+        type=int,
+        default=64,
+        help="Anchor 数量 (默认: 64)",
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=20.0,
+        help="Anchor kernel 的温度参数 (默认: 20.0)",
     )
 
     # 输出配置

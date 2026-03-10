@@ -8,6 +8,8 @@ supporting various attention mechanisms and cache strategies.
 
 import os
 import sys
+import json
+import argparse
 from pathlib import Path
 
 # Add project root to sys.path for importing swaa_patch
@@ -21,6 +23,8 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
+from lm_eval import simple_evaluate
+from lm_eval.utils import handle_non_serializable
 from swaa_patch import SWAAConfig, hack_hf_swaa, hack_kv_cache_recurrent_state
 from swaa_patch.kernel.AnchorKernel import AnchorKernel
 # Global log file path
@@ -141,7 +145,7 @@ class SWAAHFLM(LM):
         self.model.config.swaa_config = self.swaa_config
         self.model.config.kernel = AnchorKernel(
         head_dim=self.model.config.head_dim,
-        num_anchors=128,
+        num_anchors=64,
         tau=20.0,
         learnable_anchors=False,
         device=self.device,
@@ -415,3 +419,284 @@ class SWAAHFLM(LM):
             )
 
         return results
+
+
+def run_evaluation(
+    model_path: str,
+    tasks: List[str],
+    output_dir: str = "./eval_results",
+    batch_size: int = 1,
+    device: str = "cuda:0",
+    torch_dtype: str = "bfloat16",
+    num_fewshot: Optional[int] = None,
+    limit: Optional[int] = None,
+    # SWAA parameters
+    sliding_window_size: int = 2048,
+    keep_first: int = 4,
+    force_fa_decode: bool = False,
+    non_sliding_layers: Optional[List[int]] = None,
+    enable_linear_mem: bool = True,
+    flash_attn_weight: float = 0.9,
+    linear_mem_weight: float = 0.1,
+    **kwargs,
+):
+    """
+    Run evaluation with detailed sample-level result saving.
+
+    Args:
+        model_path: Path to the pretrained model
+        tasks: List of task names to evaluate
+        output_dir: Directory to save evaluation results
+        batch_size: Batch size for evaluation
+        device: Device to run evaluation on
+        torch_dtype: Torch dtype for model
+        num_fewshot: Number of few-shot examples
+        limit: Limit number of samples per task
+        sliding_window_size: SWAA sliding window size
+        keep_first: SWAA keep_first parameter
+        force_fa_decode: SWAA force_fa_decode parameter
+        non_sliding_layers: SWAA non_sliding_layers parameter
+        enable_linear_mem: SWAA enable_linear_mem parameter
+        flash_attn_weight: SWAA flash_attn_weight parameter
+        linear_mem_weight: SWAA linear_mem_weight parameter
+        **kwargs: Additional arguments passed to simple_evaluate
+
+    Returns:
+        Dictionary containing evaluation results
+    """
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Generate timestamp for this run
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    print(f"\n{'='*80}")
+    print(f"Starting Evaluation")
+    print(f"{'='*80}")
+    print(f"Model: {model_path}")
+    print(f"Tasks: {', '.join(tasks)}")
+    print(f"Output Directory: {output_dir}")
+    print(f"Timestamp: {timestamp}")
+    print(f"{'='*80}\n")
+
+    # Build model arguments
+    model_args = {
+        "pretrained": model_path,
+        "device": device,
+        "torch_dtype": torch_dtype,
+        "batch_size": batch_size,
+        "sliding_window_size": sliding_window_size,
+        "keep_first": keep_first,
+        "force_fa_decode": force_fa_decode,
+        "non_sliding_layers": str(non_sliding_layers or []),
+        "enable_linear_mem": enable_linear_mem,
+        "flash_attn_weight": flash_attn_weight,
+        "linear_mem_weight": linear_mem_weight,
+    }
+
+    # Run evaluation with log_samples=True to save detailed results
+    results = simple_evaluate(
+        model="swaa_hf",
+        model_args=model_args,
+        tasks=tasks,
+        num_fewshot=num_fewshot,
+        batch_size=batch_size,
+        device=device,
+        limit=limit,
+        log_samples=True,  # Enable sample-level logging
+        **kwargs,
+    )
+
+    # Save complete results with samples
+    results_file = output_path / f"results_{timestamp}.json"
+    with open(results_file, "w", encoding="utf-8") as f:
+        json.dump(results, f, default=handle_non_serializable, indent=2, ensure_ascii=False)
+    print(f"\n✓ Complete results saved to: {results_file}")
+
+    # Save summary (without samples for quick viewing)
+    summary = {
+        "results": results.get("results", {}),
+        "configs": results.get("configs", {}),
+        "versions": results.get("versions", {}),
+        "n-shot": results.get("n-shot", {}),
+        "higher_is_better": results.get("higher_is_better", {}),
+        "n-samples": results.get("n-samples", {}),
+    }
+    summary_file = output_path / f"summary_{timestamp}.json"
+    with open(summary_file, "w", encoding="utf-8") as f:
+        json.dump(summary, f, default=handle_non_serializable, indent=2, ensure_ascii=False)
+    print(f"✓ Summary saved to: {summary_file}")
+
+    # Save detailed sample results in a more readable format
+    if "samples" in results:
+        samples_dir = output_path / f"samples_{timestamp}"
+        samples_dir.mkdir(exist_ok=True)
+
+        for task_name, task_samples in results["samples"].items():
+            task_file = samples_dir / f"{task_name}.jsonl"
+            with open(task_file, "w", encoding="utf-8") as f:
+                for sample in task_samples:
+                    f.write(json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n")
+            print(f"✓ Task '{task_name}' samples saved to: {task_file}")
+
+    # Print summary to console
+    print(f"\n{'='*80}")
+    print("Evaluation Summary")
+    print(f"{'='*80}")
+    for task_name, task_results in results.get("results", {}).items():
+        print(f"\n{task_name}:")
+        for metric, value in task_results.items():
+            if isinstance(value, (int, float)):
+                print(f"  {metric}: {value:.4f}" if isinstance(value, float) else f"  {metric}: {value}")
+    print(f"{'='*80}\n")
+
+    return results
+
+
+def main():
+    """Command-line interface for evaluation."""
+    parser = argparse.ArgumentParser(
+        description="Evaluate SWAA models with detailed result logging",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic evaluation
+  python eval_swaa_model.py --model_path ./model --tasks hellaswag arc_easy
+
+  # With custom output directory and few-shot
+  python eval_swaa_model.py --model_path ./model --tasks mmlu --num_fewshot 5 --output_dir ./results
+
+  # Limit samples for testing
+  python eval_swaa_model.py --model_path ./model --tasks hellaswag --limit 10
+
+Output Files:
+  - results_<timestamp>.json: Complete evaluation results including all samples
+  - summary_<timestamp>.json: Summary metrics without individual samples
+  - samples_<timestamp>/<task>.jsonl: Per-task sample-level results in JSONL format
+  - evaluation.log: Detailed execution log
+        """
+    )
+
+    # Required arguments
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        required=True,
+        help="Path to the pretrained model"
+    )
+    parser.add_argument(
+        "--tasks",
+        type=str,
+        nargs="+",
+        required=True,
+        help="List of task names to evaluate (e.g., hellaswag arc_easy mmlu)"
+    )
+
+    # Optional arguments
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./eval_results",
+        help="Directory to save evaluation results (default: ./eval_results)"
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=1,
+        help="Batch size for evaluation (default: 1)"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda:0",
+        help="Device to run evaluation on (default: cuda:0)"
+    )
+    parser.add_argument(
+        "--torch_dtype",
+        type=str,
+        default="bfloat16",
+        choices=["float32", "float16", "bfloat16"],
+        help="Torch dtype for model (default: bfloat16)"
+    )
+    parser.add_argument(
+        "--num_fewshot",
+        type=int,
+        default=None,
+        help="Number of few-shot examples (default: task-specific)"
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit number of samples per task (for testing)"
+    )
+
+    # SWAA-specific arguments
+    parser.add_argument(
+        "--sliding_window_size",
+        type=int,
+        default=2048,
+        help="SWAA sliding window size (default: 2048)"
+    )
+    parser.add_argument(
+        "--keep_first",
+        type=int,
+        default=4,
+        help="SWAA keep_first parameter (default: 4)"
+    )
+    parser.add_argument(
+        "--force_fa_decode",
+        action="store_true",
+        help="Force flash attention during decoding"
+    )
+    parser.add_argument(
+        "--non_sliding_layers",
+        type=int,
+        nargs="*",
+        default=[],
+        help="Layers that should not use sliding window (default: [])"
+    )
+    parser.add_argument(
+        "--enable_linear_mem",
+        action="store_true",
+        default=True,
+        help="Enable linear memory mechanism (default: True)"
+    )
+    parser.add_argument(
+        "--flash_attn_weight",
+        type=float,
+        default=0.9,
+        help="Flash attention weight (default: 0.9)"
+    )
+    parser.add_argument(
+        "--linear_mem_weight",
+        type=float,
+        default=0.1,
+        help="Linear memory weight (default: 0.1)"
+    )
+
+    args = parser.parse_args()
+
+    # Run evaluation
+    run_evaluation(
+        model_path=args.model_path,
+        tasks=args.tasks,
+        output_dir=args.output_dir,
+        batch_size=args.batch_size,
+        device=args.device,
+        torch_dtype=args.torch_dtype,
+        num_fewshot=args.num_fewshot,
+        limit=args.limit,
+        sliding_window_size=args.sliding_window_size,
+        keep_first=args.keep_first,
+        force_fa_decode=args.force_fa_decode,
+        non_sliding_layers=args.non_sliding_layers,
+        enable_linear_mem=args.enable_linear_mem,
+        flash_attn_weight=args.flash_attn_weight,
+        linear_mem_weight=args.linear_mem_weight,
+    )
+
+
+if __name__ == "__main__":
+    main()
