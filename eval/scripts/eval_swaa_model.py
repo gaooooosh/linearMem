@@ -73,6 +73,10 @@ class SWAAHFLM(LM):
         enable_linear_mem: bool = True,
         flash_attn_weight: float = 0.9,
         linear_mem_weight: float = 0.1,
+        linear_mem_mode: str = "fused_recurrent",
+        # Anchor kernel configuration
+        num_anchors: int = 64,
+        tau: float = 20.0,
         # Generation config
         batch_size: Optional[int] = None,
         max_length: int = 4096,
@@ -144,12 +148,12 @@ class SWAAHFLM(LM):
         )
         self.model.config.swaa_config = self.swaa_config
         self.model.config.kernel = AnchorKernel(
-        head_dim=self.model.config.head_dim,
-        num_anchors=64,
-        tau=20.0,
-        learnable_anchors=False,
-        device=self.device,
-        dtype = torch.bfloat16
+            head_dim=self.model.config.head_dim,
+            num_anchors=num_anchors,
+            tau=tau,
+            learnable_anchors=False,
+            device=self.device,
+            dtype=self.torch_dtype,
         )
         print(f"\n{'='*60}")
         print(f"SWAA Model Loaded: {pretrained}")
@@ -165,6 +169,10 @@ class SWAAHFLM(LM):
         print(f"  - enable_linear_mem: {enable_linear_mem}")
         print(f"  - flash_attn_weight: {flash_attn_weight}")
         print(f"  - linear_mem_weight: {linear_mem_weight}")
+        print(f"  - linear_mem_mode: {linear_mem_mode}")
+        print(f"\nAnchor Kernel Configuration:")
+        print(f"  - num_anchors: {num_anchors}")
+        print(f"  - tau: {tau}")
         print(f"{'='*60}\n")
 
         # Initialize fresh evaluation log
