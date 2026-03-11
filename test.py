@@ -28,7 +28,7 @@ def main():
     # 2. Model Configuration
     # =========================================================================
     model_name = "Qwen/Qwen3-1.7B"
-    device = "cuda:6" if torch.cuda.is_available() else "cpu"
+    device = "cuda:4" if torch.cuda.is_available() else "cpu"
 
     print(f"Loading model: {model_name}")
     print(f"Device: {device}")
@@ -77,7 +77,7 @@ def main():
     linear_kernel = AnchorKernel(
     head_dim=model.config.head_dim,
     num_anchors=256,
-    tau=20.0,
+    tau=2.0,
     learnable_anchors=False,
     device=device,
     dtype = torch.bfloat16
@@ -123,7 +123,7 @@ def main():
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=1024,
+                max_new_tokens=512,
                 do_sample=True,
                 num_beams=1,
                 temperature=1.0,

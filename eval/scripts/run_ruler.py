@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_swaa_model import SWAAHFLM
 
 from lm_eval import evaluator
-from lm_eval.utils import make_table
+from lm_eval.utils import make_table, handle_non_serializable
 
 
 # RULER 任务列表
@@ -202,17 +202,42 @@ def run_ruler_evaluation(args):
             device=args.device,
             limit=args.limit,
             gen_kwargs=gen_kwargs,
-            log_samples=False,
+            log_samples=True,  # 启用样本级详细日志
             metadata=metadata,  # 通过 metadata 传递测试长度
         )
 
         # 添加配置信息到结果
         results["eval_config"] = config
 
-        # 保存完整结果
+        # 保存完整结果（包含样本数据）
         results_file = output_dir / "results.json"
         with open(results_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, default=str, ensure_ascii=False)
+            json.dump(results, f, indent=2, default=handle_non_serializable, ensure_ascii=False)
+
+        # 保存摘要（不包含样本数据，便于快速查看）
+        summary = {
+            "results": results.get("results", {}),
+            "configs": results.get("configs", {}),
+            "versions": results.get("versions", {}),
+            "n-shot": results.get("n-shot", {}),
+            "higher_is_better": results.get("higher_is_better", {}),
+            "n-samples": results.get("n-samples", {}),
+            "eval_config": config,
+        }
+        summary_file = output_dir / "summary.json"
+        with open(summary_file, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2, default=handle_non_serializable, ensure_ascii=False)
+
+        # 保存详细的样本级结果（JSONL 格式）
+        if "samples" in results:
+            samples_dir = output_dir / "samples"
+            samples_dir.mkdir(exist_ok=True)
+
+            for task_name, task_samples in results["samples"].items():
+                task_file = samples_dir / f"{task_name}.jsonl"
+                with open(task_file, "w", encoding="utf-8") as f:
+                    for sample in task_samples:
+                        f.write(json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n")
 
         # 打印结果表格
         print("\n" + "=" * 80)
@@ -229,9 +254,12 @@ def run_ruler_evaluation(args):
         generate_report(results, output_dir, config)
 
         print(f"\n✅ 结果已保存到: {output_dir}")
-        print(f"   - 完整结果: {results_file}")
+        print(f"   - 完整结果（含样本）: {results_file}")
+        print(f"   - 摘要（不含样本）: {summary_file}")
         print(f"   - 结果表格: {table_file}")
         print(f"   - 评测报告: {output_dir / 'report.md'}")
+        if "samples" in results:
+            print(f"   - 样本级详细结果: {output_dir / 'samples'}/")
 
         # 打印摘要
         print_summary(results)
