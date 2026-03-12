@@ -115,14 +115,13 @@ def main():
         flash_attn_weight=1.0,
         linear_mem_weight=0.6,
         linear_mem_mode="fused_chunk",
+
     )
 
-    m = 32
-    t = 10*math.log(m)+10
     linear_kernel = AnchorKernel(
     head_dim=model.config.head_dim,
-    num_anchors=256,
-    tau=1.0,
+    num_anchors=16,
+    tau=100.0,
     learnable_anchors=False,
     device=device,
     dtype = torch.bfloat16
