@@ -230,37 +230,14 @@ def linear_mem_ops(
         o = rearrange(o, '... h d -> ... (h d)')
         return o, recurrent_state
 
-def rms_norm_per_head(
-    x: torch.Tensor,
-    num_heads: int,
-    eps: float = 1e-6,
-) -> torch.Tensor:
-    """
-    Per-head RMSNorm without learnable params.
+def mem_proj(o_base: torch.Tensor, o_mem: torch.Tensor,eps = 1e-6) -> torch.Tensor:
+        # 投影系数
+        denom = (o_base * o_base).sum(dim=-1, keepdim=True).clamp_min(eps)
+        coeff = (o_mem * o_base).sum(dim=-1, keepdim=True) / denom
 
-    Args:
-        x: [B, T, H*D] or [B, T, H, D]
-        num_heads: H
-        eps: numerical stability
-
-    Returns:
-        normalized x, same shape as input
-    """
-    if x.dim() == 3:
-        B, T, HD = x.shape
-        assert HD % num_heads == 0, f"HD={HD} not divisible by num_heads={num_heads}"
-        head_dim = HD // num_heads
-        x4 = x.view(B, T, num_heads, head_dim)  # [B, T, H, D]
-        rms = torch.sqrt(x4.pow(2).mean(dim=-1, keepdim=True) + eps)  # [B, T, H, 1]
-        y4 = x4 / rms
-        return y4.view(B, T, HD)
-    elif x.dim() == 4:
-        # [B, T, H, D]
-        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)  # [B, T, H, 1]
-        return x / rms
-    else:
-        raise ValueError(f"Unsupported rank: {x.dim()}")
-
+        proj = coeff * o_base
+        delta_mem = o_mem - proj
+        return delta_mem
 
 def attention_forward_swaa(
         self,
@@ -433,7 +410,7 @@ def attention_forward_swaa(
         # ✨ 优化: 使用原地操作进行混合输出
         # 性能提升: 2.7x 加速 (62.4% 提升)
         attn_output = attn_output.reshape(*input_shape, -1)
-        attn_output.mul_(flash_attn_weight).add_(o_linear, alpha=linear_mem_weight)
+        attn_output.mul_(flash_attn_weight).add_(mem_proj(o_linear, o_linear), alpha=linear_mem_weight)
     else:
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 

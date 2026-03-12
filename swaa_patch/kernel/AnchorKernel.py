@@ -90,12 +90,11 @@ class AnchorKernel(nn.Module):
         self.anchors = nn.Parameter(anchors, requires_grad=learnable_anchors)
 
     def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
-        x = F.normalize(x, dim=-1, eps=self.eps)
-        anchors = F.normalize(self.anchors, dim=-1, eps=self.eps)
+        # x = F.normalize(x, dim=-1, eps=self.eps)
+        # anchors = F.normalize(self.anchors, dim=-1, eps=self.eps)
 
-        sim = torch.einsum("bhtd,md->bhtm", x, anchors)
+        sim = torch.einsum("bhtd,md->bhtm", x, self.anchors)
 
-        logits = self.tau * (sim - 1.0)
-        logits = logits.clamp(min=-60.0, max=0.0)  # 数值更稳
-        phi = torch.exp(logits)
+        logits = self.tau * sim
+        phi = torch.softmax(logits, dim=-1)
         return phi
