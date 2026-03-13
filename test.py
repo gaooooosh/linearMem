@@ -13,6 +13,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from swaa_patch import SWAAConfig, hack_hf_swaa,hack_kv_cache_recurrent_state
 from swaa_patch.kernel.AnchorKernel import AnchorKernel
+from swaa_patch.kernel.EluKernel import EluKernel
+from swaa_patch.kernel.TopkSoftplusKernel import GatedTopkSoftplusKernel, PowTopkSoftplusKernel
 import math
 from pathlib import Path
 from typing import Union
@@ -110,25 +112,28 @@ def main():
         sliding_window_size=2048,
         keep_first=16,
         force_fa_decode=False,
-        non_sliding_layers=non_sliding_layers,
+        non_sliding_layers=[],
         enable_linear_mem=True,
-        flash_attn_weight=1.0,
-        linear_mem_weight=0.6,
+        flash_attn_weight=0.6,
+        linear_mem_weight=2.0,
         linear_mem_mode="fused_chunk",
 
     )
 
-    linear_kernel = AnchorKernel(
-    head_dim=model.config.head_dim,
-    num_anchors=16,
-    tau=100.0,
-    learnable_anchors=False,
+    linear_kernel_k = GatedTopkSoftplusKernel(
+    head_dim=model.config.head_dim, topk=8,
     device=device,
     dtype = torch.bfloat16
-)
+    )
+    linear_kernel_q = PowTopkSoftplusKernel(
+    head_dim=model.config.head_dim, topk=8, gemma = 2.0,
+    device=device,
+    dtype = torch.bfloat16
+    )
     # Attach SWAA config to model config
     model.config.swaa_config = swaa_config
-    model.config.kernel = linear_kernel
+    model.config.kernel_k = linear_kernel_k
+    model.config.kernel_q = linear_kernel_q
     print(f"SWAA Config:")
     print(f"  - sliding_window_size: {swaa_config.sliding_window_size}")
     print(f"  - keep_first: {swaa_config.keep_first}")

@@ -28,7 +28,7 @@ from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn, fuse
 from fla.layers.utils import get_unpad_data, index_first_axis, pad_input
 from .swaa_config import SWAAConfig
 
-from .kernel.AnchorKernel import AnchorKernel
+# from .kernel.AnchorKernel import AnchorKernel,EluKernel
 logger = logging.get_logger(__name__)
 
 def _lazy_define_process_function_swaa(flash_function):
@@ -149,7 +149,8 @@ def linear_mem_ops(
     last_state: Cache | None = None,
     use_cache: bool | None = False,
     mode: str | None = None,
-    kernel = None,
+    kernel_q: Optional[nn.Module] = None,
+    kernel_k: Optional[nn.Module] = None,
         **kwargs: Unpack[dict],
     ) -> tuple[torch.Tensor, torch.Tensor | None, Cache | None]:
         if attention_mask is not None:
@@ -178,8 +179,8 @@ def linear_mem_ops(
         num_kv_groups = num_attention_heads // k.shape[1]
 
         if kernel is not None:
-            q = kernel(q)
-            k = kernel(k)
+            q = kernel_q(q)
+            k = kernel_k(k)
 
         # ✨ 优化: 使用 repeat_interleave 替代 expand+reshape，更高效的内存布局
         # 内存节省: ~50% (对于16k序列长度，从0.218 GB降至0.109 GB/层)

@@ -1,6 +1,6 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-
 
 def make_stable_fps_anchors(
     num_anchors: int,
@@ -51,11 +51,6 @@ def make_stable_fps_anchors(
     return anchors
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-
 class AnchorKernel(nn.Module):
     """
     Dense anchor feature map:
@@ -93,7 +88,7 @@ class AnchorKernel(nn.Module):
         # x = F.normalize(x, dim=-1, eps=self.eps)
         # anchors = F.normalize(self.anchors, dim=-1, eps=self.eps)
 
-        sim = torch.einsum("bhtd,md->bhtm", x, self.anchors)
+        sim = torch.einsum("bhtd,md->bhtm", F.elu(x), F.elu(self.anchors))
 
         logits = self.tau * sim
         phi = torch.softmax(logits, dim=-1)
