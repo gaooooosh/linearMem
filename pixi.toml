@@ -139,6 +139,7 @@ verify = { depends-on = ["check-env", "test-imports", "test-swaa"], description 
 
 [dependencies]
 transformers = ">=5.2.0,<6"
+matplotlib = ">=3.10.8,<4"
 
 [pypi-dependencies]
 lm-eval = { version = ">=0.4.11, <0.5", extras = ["hf"] }

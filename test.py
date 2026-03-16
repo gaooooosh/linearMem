@@ -14,7 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from swaa_patch import SWAAConfig, hack_hf_swaa,hack_kv_cache_recurrent_state
 from swaa_patch.kernel.AnchorKernel import AnchorKernel
 from swaa_patch.kernel.EluKernel import EluKernel
-from swaa_patch.kernel.TopkSoftplusKernel import GatedTopkSoftplusKernel, PowTopkSoftplusKernel
+from swaa_patch.kernel.SoftplusKernel import GatedTopkSoftplusKernel, PowTopkSoftplusKernel
 import math
 from pathlib import Path
 from typing import Union
@@ -73,7 +73,7 @@ def main():
     # 2. Model Configuration
     # =========================================================================
     model_name = "Qwen/Qwen3-1.7B"
-    device = "cuda:6" if torch.cuda.is_available() else "cpu"
+    device = "cuda:4" if torch.cuda.is_available() else "cpu"
 
     print(f"Loading model: {model_name}")
     print(f"Device: {device}")
@@ -114,8 +114,8 @@ def main():
         force_fa_decode=False,
         non_sliding_layers=[],
         enable_linear_mem=True,
-        flash_attn_weight=0.6,
-        linear_mem_weight=2.0,
+        flash_attn_weight=1.0,
+        linear_mem_weight=5.0,
         linear_mem_mode="fused_chunk",
 
     )
@@ -126,7 +126,7 @@ def main():
     dtype = torch.bfloat16
     )
     linear_kernel_q = PowTopkSoftplusKernel(
-    head_dim=model.config.head_dim, topk=8, gemma = 2.0,
+    head_dim=model.config.head_dim, topk=8, gamma = 5.0,
     device=device,
     dtype = torch.bfloat16
     )

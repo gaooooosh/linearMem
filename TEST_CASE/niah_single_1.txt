@@ -369,7 +369,7 @@ The grass is green. The sky is blue. The sun is yellow. Here we go. There and ba
 The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again.
 The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again.
 The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again.
-One of the special magic numbers for solid-few is: 7700828.
+One of the special magic numbers for solid-few is: 25.
 The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again.
 The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again.
 The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again.

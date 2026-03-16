@@ -24,6 +24,7 @@ from transformers.models.gemma3 import Gemma3Config
 
 from einops import rearrange, repeat
 import torch.nn.functional as F
+import torch.nn as nn
 from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn, fused_recurrent_linear_attn
 from fla.layers.utils import get_unpad_data, index_first_axis, pad_input
 from .swaa_config import SWAAConfig
@@ -178,7 +179,7 @@ def linear_mem_ops(
         # k, v shape: (batch, num_kv_heads, seq, head_dim)
         num_kv_groups = num_attention_heads // k.shape[1]
 
-        if kernel is not None:
+        if kernel_q and kernel_k is not None:
             q = kernel_q(q)
             k = kernel_k(k)
 
@@ -256,7 +257,8 @@ def attention_forward_swaa(
 
     # Extract sliding_window_size, keep_first, force_fa_decode, non_sliding_layers from self.config.swaa_config
     swaa_config:SWAAConfig = self.config.swaa_config if hasattr(self.config, "swaa_config") else SWAAConfig()
-    linear_kernel = self.config.kernel
+    linear_kernel_q = self.config.kernel_q
+    linear_kernel_k = self.config.kernel_k
 
     sliding_window_size=swaa_config.sliding_window_size
     non_sliding_layers=swaa_config.non_sliding_layers
@@ -399,7 +401,8 @@ def attention_forward_swaa(
             attention_mask=attention_mask,
             output_final_state=True,
             mode=linear_mem_mode,
-            kernel = linear_kernel,
+            kernel_q=linear_kernel_q,
+            kernel_k=linear_kernel_k,
             **kwargs,
         )
 
