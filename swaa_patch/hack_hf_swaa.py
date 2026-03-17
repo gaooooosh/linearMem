@@ -198,7 +198,7 @@ def linear_mem_ops(
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
                 normalize=True,
-                scale= 1.0 
+                scale= 1.0
             )
         elif mode == 'fused_chunk':
             o, recurrent_state = fused_chunk_linear_attn(
@@ -413,7 +413,7 @@ def attention_forward_swaa(
         # ✨ 优化: 使用原地操作进行混合输出
         # 性能提升: 2.7x 加速 (62.4% 提升)
         attn_output = attn_output.reshape(*input_shape, -1)
-        attn_output.mul_(flash_attn_weight).add_(mem_proj(o_linear, o_linear), alpha=linear_mem_weight)
+        attn_output.mul_(flash_attn_weight).add_(o_linear, alpha=linear_mem_weight)
     else:
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 

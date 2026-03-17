@@ -36,8 +36,8 @@ class GatedTopkSoftplusKernel(nn.Module):
             out.scatter_(-1, idx, vals)
             phi = out
 
-        g = self.gate_fn(phi)
-        phi = phi * g
+        # g = self.gate_fn(phi)
+        # phi = phi * g
         return phi
 
 
@@ -62,6 +62,7 @@ class PowTopkSoftplusKernel(nn.Module):
         self.gamma = gamma
         self.normalize = normalize
         self.eps = eps
+        self.gate_fn = FeatureSharpnessGate(head_dim=head_dim)
 
     def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
         phi = F.softplus(x)
@@ -78,5 +79,8 @@ class PowTopkSoftplusKernel(nn.Module):
 
         if self.normalize:
             phi = phi / (phi.sum(dim=-1, keepdim=True) + self.eps)
-
+        
+        g = self.gate_fn(phi)
+        phi = phi * g
+        
         return phi

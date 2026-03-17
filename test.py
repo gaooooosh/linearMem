@@ -15,6 +15,7 @@ from swaa_patch import SWAAConfig, hack_hf_swaa,hack_kv_cache_recurrent_state
 from swaa_patch.kernel.AnchorKernel import AnchorKernel
 from swaa_patch.kernel.EluKernel import EluKernel
 from swaa_patch.kernel.SoftplusKernel import GatedTopkSoftplusKernel, PowTopkSoftplusKernel
+from swaa_patch.kernel.NIAHKernel import PositionAwareKernel, DenseQueryKernel, RarityEnhancedKernel
 import math
 from pathlib import Path
 from typing import Union
@@ -114,22 +115,38 @@ def main():
         force_fa_decode=False,
         non_sliding_layers=[],
         enable_linear_mem=True,
-        flash_attn_weight=1.0,
-        linear_mem_weight=5.0,
+        flash_attn_weight=0.7,
+        linear_mem_weight=0.3,
         linear_mem_mode="fused_chunk",
 
     )
 
-    linear_kernel_k = GatedTopkSoftplusKernel(
-    head_dim=model.config.head_dim, topk=8,
+    linear_kernel_k = PositionAwareKernel(
+    head_dim=model.config.head_dim, topk=None,
     device=device,
     dtype = torch.bfloat16
     )
-    linear_kernel_q = PowTopkSoftplusKernel(
-    head_dim=model.config.head_dim, topk=8, gamma = 5.0,
+    linear_kernel_q = DenseQueryKernel(
+    head_dim=model.config.head_dim, topk=None, gamma = 2.0,
     device=device,
-    dtype = torch.bfloat16
+    dtype = torch.bfloat16,
+    normalize=True,
     )
+
+    ######
+    # linear_kernel_k = GatedTopkSoftplusKernel(
+    # head_dim=model.config.head_dim, topk=None,
+    # device=device,
+    # dtype = torch.bfloat16
+    # )
+    # linear_kernel_q = PowTopkSoftplusKernel(
+    # head_dim=model.config.head_dim, topk=20, gamma = 5.0,
+    # device=device,
+    # dtype = torch.bfloat16,
+    # normalize=True,
+    # )
+
+
     # Attach SWAA config to model config
     model.config.swaa_config = swaa_config
     model.config.kernel_k = linear_kernel_k
@@ -153,7 +170,7 @@ def main():
     test_prompts = [
         "你好，你是谁?",
         "法国的首都是哪里？",
-        "解释线性注意力机制。",
+        # "解释线性注意力机制。",
         case_text("TEST_CASE/niah_single_1.txt")
         # Example: Using file content with display name
         # {

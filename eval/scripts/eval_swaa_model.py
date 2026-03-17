@@ -27,6 +27,7 @@ from lm_eval import simple_evaluate
 from lm_eval.utils import handle_non_serializable
 from swaa_patch import SWAAConfig, hack_hf_swaa, hack_kv_cache_recurrent_state
 from swaa_patch.kernel.AnchorKernel import AnchorKernel
+from swaa_patch.kernel.SoftplusKernel import GatedTopkSoftplusKernel, PowTopkSoftplusKernel
 # Global log file path
 EVAL_LOG_FILE = Path(__file__).parent.parent / "evaluation.log"
 
@@ -147,14 +148,24 @@ class SWAAHFLM(LM):
             linear_mem_weight=linear_mem_weight,
         )
         self.model.config.swaa_config = self.swaa_config
-        self.model.config.kernel = AnchorKernel(
-            head_dim=self.model.config.head_dim,
-            num_anchors=num_anchors,
-            tau=tau,
-            learnable_anchors=False,
-            device=self.device,
-            dtype=self.torch_dtype,
+
+
+        linear_kernel_k = GatedTopkSoftplusKernel(
+        head_dim=self.model.config.head_dim, topk=None,
+        device=self.device,
+        dtype = torch.bfloat16
         )
+        linear_kernel_q = PowTopkSoftplusKernel(
+        head_dim=self.model.config.head_dim, topk=20, gamma = 5.0,
+        device=self.device,
+        dtype = torch.bfloat16,
+        normalize=True,
+        )
+
+        self.model.config.kernel_k = linear_kernel_k
+        self.model.config.kernel_q = linear_kernel_q
+
+
         print(f"\n{'='*60}")
         print(f"SWAA Model Loaded: {pretrained}")
         print(f"{'='*60}")

@@ -10,3 +10,4 @@ todo
 METHOD.md
 qkv_analysis/*
 analyze_qkv_distribution.py
+paper_draft_sequence_mixed_attention.md
