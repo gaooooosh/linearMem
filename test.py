@@ -99,19 +99,13 @@ def main():
     # =========================================================================
     # 4. Configure SWAA
     # =========================================================================
-    # SWAA Configuration for Qwen3-1.7B (28 layers)
-    # - sliding_window_size: 2048 tokens for sliding window
-    # - keep_first: 64 sink tokens at the beginning
-    # - force_fa_decode: Use full attention during decoding
-    # - non_sliding_layers: Layers that use full attention (every other layer)
-    # - flash_attn_weight: Weight for flash attention output (default: 0.9)
-    # - linear_mem_weight: Weight for linear memory output (default: 0.1)
+
     num_layers = model.config.num_hidden_layers
     non_sliding_layers = []  # Every other layer uses full attention
 
     swaa_config = SWAAConfig(
         sliding_window_size=2048,
-        keep_first=16,
+        keep_first=64,
         force_fa_decode=False,
         non_sliding_layers=[],
         enable_linear_mem=True,
