@@ -28,7 +28,7 @@ class FeatureSharpnessGate(nn.Module):
         self.clamp_min = clamp_min
         self.clamp_max = clamp_max
 
-    def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
+    def forward(self, x: torch.tensor) -> torch.Tensor:
         l1 = x.sum(dim=-1, keepdim=True)
         l2_sq = (x * x).sum(dim=-1, keepdim=True)
 

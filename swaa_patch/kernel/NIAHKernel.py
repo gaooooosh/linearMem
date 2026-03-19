@@ -52,7 +52,7 @@ class RarityEnhancedKernel(nn.Module):
         self.normalize = normalize
         self.eps = eps
 
-    def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: [..., d] - 任意形状，最后一维是head_dim
@@ -118,7 +118,7 @@ class PositionAwareKernel(nn.Module):
         self.normalize = normalize
         self.eps = eps
 
-    def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: [..., d] - 对于K通常是 [batch, heads, seq, dim]
@@ -134,7 +134,7 @@ class PositionAwareKernel(nn.Module):
         dim = original_shape[-1]
 
         # 2. 位置加权（仅对K向量，且需要至少3D输入）
-        if kind == 'K' and phi.dim() >= 3:
+        if phi.dim() >= 3:
             seq_len = original_shape[-2]
 
             # 计算相对位置（0=开头，1=结尾）
@@ -195,7 +195,7 @@ class DenseQueryKernel(nn.Module):
         self.normalize = normalize
         self.eps = eps
 
-    def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: [..., d] - Q向量

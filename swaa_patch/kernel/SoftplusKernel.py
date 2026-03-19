@@ -26,7 +26,7 @@ class GatedTopkSoftplusKernel(nn.Module):
         self.topk = topk
         self.gate_fn = FeatureSharpnessGate(head_dim=head_dim)
 
-    def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         phi = F.softplus(x)
 
         k = self.topk
@@ -64,7 +64,7 @@ class PowTopkSoftplusKernel(nn.Module):
         self.eps = eps
         self.gate_fn = FeatureSharpnessGate(head_dim=head_dim)
 
-    def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         phi = F.softplus(x)
 
         k = self.topk

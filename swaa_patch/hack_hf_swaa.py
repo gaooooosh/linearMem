@@ -26,7 +26,6 @@ from einops import rearrange, repeat
 import torch.nn.functional as F
 import torch.nn as nn
 from fla.ops.linear_attn import chunk_linear_attn, fused_chunk_linear_attn, fused_recurrent_linear_attn
-from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
 from fla.layers.utils import get_unpad_data, index_first_axis, pad_input
 from .swaa_config import SWAAConfig
 
@@ -166,7 +165,7 @@ def linear_mem_ops(
         _, _, k_len, head_k_dim = k.shape # shape (batch_size, num_attention_heads, seq_length, head_dim)
 
         # mode = 'fused_recurrent' if mode is None else mode
-        mode = 'fused_recurrent' if q_len <= 64 else 'chunk'
+        mode = 'fused_recurrent' if q_len <= 64 else 'fused_chunk'
 
         cu_seqlens = kwargs.get('cu_seqlens')
         if attention_mask is not None:
@@ -190,17 +189,15 @@ def linear_mem_ops(
             k = k.repeat_interleave(num_kv_groups, dim=1)
             v = v.repeat_interleave(num_kv_groups, dim=1)
 
-        beta = torch.ones_like(q[..., 0])
         if mode == 'fused_recurrent':
-            o, recurrent_state = fused_recurrent_delta_rule(
+            o, recurrent_state = fused_recurrent_linear_attn(
                 q=q,
                 k=k,
                 v=v,
-                beta=beta,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
-                # normalize=True,
+                normalize=True,
                 scale= 1.0
             )
         elif mode == 'fused_chunk':
@@ -215,15 +212,14 @@ def linear_mem_ops(
                 scale = 1.0
             )
         elif mode == 'chunk':
-            o, recurrent_state = chunk_delta_rule(
+            o, recurrent_state = chunk_linear_attn(
                 q=q,
                 k=k,
                 v=v,
-                beta=beta,
                 initial_state=recurrent_state,
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
-                # normalize=True,
+                normalize=True,
                 scale = 1.0
             )
         else:

@@ -16,7 +16,7 @@ class EluKernel(nn.Module):
         super().__init__()
         self.head_dim = head_dim
 
-    def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x = F.normalize(x, dim=-1, eps=self.eps)
         # anchors = F.normalize(self.anchors, dim=-1, eps=self.eps)
 

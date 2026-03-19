@@ -84,7 +84,7 @@ class AnchorKernel(nn.Module):
         )
         self.anchors = nn.Parameter(anchors, requires_grad=learnable_anchors)
 
-    def forward(self, x: torch.Tensor, kind: str | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x = F.normalize(x, dim=-1, eps=self.eps)
         # anchors = F.normalize(self.anchors, dim=-1, eps=self.eps)
 
