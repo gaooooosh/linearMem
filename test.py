@@ -109,9 +109,10 @@ def main():
         force_fa_decode=False,
         non_sliding_layers=[],
         enable_linear_mem=True,
-        flash_attn_weight=0.7,
-        linear_mem_weight=0.3,
+        flash_attn_weight=1.0,
+        linear_mem_weight=0.02,
         linear_mem_mode="fused_chunk",
+        linear_mem_blend_mode="orth_match",
 
     )
 
@@ -153,6 +154,7 @@ def main():
     print(f"  - enable_linear_mem: {swaa_config.enable_linear_mem}")
     print(f"  - flash_attn_weight: {swaa_config.flash_attn_weight}")
     print(f"  - linear_mem_weight: {swaa_config.linear_mem_weight}")
+    print(f"  - linear_mem_blend_mode: {swaa_config.linear_mem_blend_mode}")
     print(f"  - mark: {swaa_config.mark}")
     print("-" * 50)
 

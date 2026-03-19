@@ -147,13 +147,15 @@ def linear_mem_ops(
     k: torch.Tensor,
     v: torch.Tensor,
     attention_mask: torch.Tensor | None = None,
-    last_state: Cache | None = None,
+    last_state: torch.Tensor | None = None,
     use_cache: bool | None = False,
+    initial_state: torch.Tensor | None = None,
+    output_final_state: bool | None = None,
     mode: str | None = None,
     kernel_q: Optional[nn.Module] = None,
     kernel_k: Optional[nn.Module] = None,
         **kwargs: Unpack[dict],
-    ) -> tuple[torch.Tensor, torch.Tensor | None, Cache | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if attention_mask is not None:
             assert len(attention_mask.shape) == 2, (
                 "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
@@ -161,26 +163,27 @@ def linear_mem_ops(
                 "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
             )
 
-        batch_size, num_attention_heads, q_len, head_q_dim = q.shape # shape (batch_size, num_attention_heads, seq_length, head_dim)
-        _, _, k_len, head_k_dim = k.shape # shape (batch_size, num_attention_heads, seq_length, head_dim)
+        _, num_attention_heads, q_len, _ = q.shape # shape (batch_size, num_attention_heads, seq_length, head_dim)
 
         # mode = 'fused_recurrent' if mode is None else mode
-        mode = 'fused_recurrent' if q_len <= 64 else 'fused_chunk'
+        mode = mode if mode is not None else ('fused_recurrent' if q_len <= 64 else 'fused_chunk')
 
         cu_seqlens = kwargs.get('cu_seqlens')
         if attention_mask is not None:
             indices, cu_seqlens, _ = get_unpad_data(attention_mask[:, -q_len:])
             # hidden_states = index_first_axis(rearrange(q, "b s ... -> (b s) ..."), indices).unsqueeze(0)
 
-        recurrent_state = last_state
+        recurrent_state = initial_state if initial_state is not None else last_state
+        output_final_state = use_cache if output_final_state is None else output_final_state
 
         # Handle GQA: expand k, v to match q's number of heads
         # q shape: (batch, num_heads, seq, head_dim)
         # k, v shape: (batch, num_kv_heads, seq, head_dim)
         num_kv_groups = num_attention_heads // k.shape[1]
 
-        if kernel_q and kernel_k is not None:
+        if kernel_q is not None:
             q = kernel_q(q)
+        if kernel_k is not None:
             k = kernel_k(k)
 
         # ✨ 优化: 使用 repeat_interleave 替代 expand+reshape，更高效的内存布局
@@ -189,13 +192,18 @@ def linear_mem_ops(
             k = k.repeat_interleave(num_kv_groups, dim=1)
             v = v.repeat_interleave(num_kv_groups, dim=1)
 
+        # FLA linear attention kernels expect [batch, seq, heads, dim].
+        q = q.transpose(1, 2).contiguous()
+        k = k.transpose(1, 2).contiguous()
+        v = v.transpose(1, 2).contiguous()
+
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_linear_attn(
                 q=q,
                 k=k,
                 v=v,
                 initial_state=recurrent_state,
-                output_final_state=use_cache,
+                output_final_state=output_final_state,
                 cu_seqlens=cu_seqlens,
                 normalize=True,
                 scale= 1.0
@@ -206,7 +214,7 @@ def linear_mem_ops(
                 k=k,
                 v=v,
                 initial_state=recurrent_state,
-                output_final_state=use_cache,
+                output_final_state=output_final_state,
                 cu_seqlens=cu_seqlens,
                 normalize=True,
                 scale = 1.0
@@ -217,7 +225,7 @@ def linear_mem_ops(
                 k=k,
                 v=v,
                 initial_state=recurrent_state,
-                output_final_state=use_cache,
+                output_final_state=output_final_state,
                 cu_seqlens=cu_seqlens,
                 normalize=True,
                 scale = 1.0
@@ -225,10 +233,7 @@ def linear_mem_ops(
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
-        # Transpose from (batch, num_heads, seq_len, head_dim) to (batch, seq_len, num_heads, head_dim)
-        # to match flash_attention_forward output format
-        o = o.transpose(1, 2)
-        o = rearrange(o, '... h d -> ... (h d)')
+        o = rearrange(o, 'b t h d -> b t (h d)')
         return o, recurrent_state
 
 def mem_proj(o_base: torch.Tensor, o_mem: torch.Tensor,eps = 1e-6) -> torch.Tensor:
@@ -239,6 +244,35 @@ def mem_proj(o_base: torch.Tensor, o_mem: torch.Tensor,eps = 1e-6) -> torch.Tens
         proj = coeff * o_base
         delta_mem = o_mem - proj
         return delta_mem
+
+def blend_linear_output(
+    o_base: torch.Tensor,
+    o_mem: torch.Tensor,
+    flash_attn_weight: float,
+    linear_mem_weight: float,
+    blend_mode: str = "raw",
+    eps: float = 1e-6,
+) -> torch.Tensor:
+        if blend_mode == "raw":
+            return o_base.mul(flash_attn_weight).add(o_mem, alpha=linear_mem_weight)
+
+        base_f = o_base.float()
+        mem_f = o_mem.float()
+
+        if blend_mode == "centered":
+            mem_f = mem_f - mem_f.mean(dim=-1, keepdim=True)
+        elif blend_mode == "orth":
+            mem_f = mem_proj(base_f, mem_f, eps=eps)
+        elif blend_mode == "orth_match":
+            mem_f = mem_proj(base_f, mem_f, eps=eps)
+            mem_norm = mem_f.norm(dim=-1, keepdim=True).clamp_min(eps)
+            base_norm = base_f.norm(dim=-1, keepdim=True).clamp_min(eps)
+            mem_f = mem_f * (base_norm / mem_norm)
+        else:
+            raise ValueError(f"Unsupported linear_mem_blend_mode: {blend_mode}")
+
+        mixed = base_f + linear_mem_weight * mem_f
+        return mixed.to(o_base.dtype)
 
 def attention_forward_swaa(
         self,
@@ -268,6 +302,7 @@ def attention_forward_swaa(
     flash_attn_weight=swaa_config.flash_attn_weight
     linear_mem_weight=swaa_config.linear_mem_weight
     linear_mem_mode=swaa_config.linear_mem_mode
+    linear_mem_blend_mode=getattr(swaa_config, "linear_mem_blend_mode", "raw")
 
     # Disable sliding window if the current layer is in non_sliding_layers
     if int(self.layer_idx) in non_sliding_layers:
@@ -410,10 +445,14 @@ def attention_forward_swaa(
             past_key_values.state_update(h, self.layer_idx)
 
         o_linear = o
-        # ✨ 优化: 使用原地操作进行混合输出
-        # 性能提升: 2.7x 加速 (62.4% 提升)
         attn_output = attn_output.reshape(*input_shape, -1)
-        attn_output.mul_(flash_attn_weight).add_(o_linear, alpha=linear_mem_weight)
+        attn_output = blend_linear_output(
+            attn_output,
+            o_linear,
+            flash_attn_weight=flash_attn_weight,
+            linear_mem_weight=linear_mem_weight,
+            blend_mode=linear_mem_blend_mode,
+        )
     else:
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 

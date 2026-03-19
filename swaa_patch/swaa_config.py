@@ -37,6 +37,10 @@ class SWAAConfig:
         default='fused_recurrent',
         metadata={"help": "Linear memory operation mode. Options: 'fused_recurrent', 'fused_chunk', 'chunk' (default: fused_recurrent)."}
     )
+    linear_mem_blend_mode: str = field(
+        default='raw',
+        metadata={"help": "How to blend linear memory output with flash attention. Options: 'raw', 'centered', 'orth', 'orth_match'."}
+    )
 
     @property
     def mark(self):
@@ -84,5 +88,6 @@ class SWAAConfig:
             'enable_linear_mem': self.enable_linear_mem,
             'flash_attn_weight': self.flash_attn_weight,
             'linear_mem_weight': self.linear_mem_weight,
-            'linear_mem_mode': self.linear_mem_mode
+            'linear_mem_mode': self.linear_mem_mode,
+            'linear_mem_blend_mode': self.linear_mem_blend_mode,
         }
