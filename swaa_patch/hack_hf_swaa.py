@@ -156,6 +156,92 @@ def linear_mem_ops(
     kernel_k: Optional[nn.Module] = None,
         **kwargs: Unpack[dict],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """
+        执行 SWAA 的 linear memory 分支计算，并返回当前步的线性读出结果和新的 recurrent state。
+
+        这个函数是 flash attention 主分支之外的“全局线性记忆”路径，负责把
+        当前层的 `q/k/v` 送入 FLA 的 linear attention kernel 中，得到一个
+        与 softmax attention 输出同形状的补充分支结果，供后续融合使用。
+
+        需要注意的几个关键约定：
+
+        1. 输入张量布局
+           调用方传入的 `q/k/v` 采用 Hugging Face attention 常见的布局：
+
+               [batch, heads, seq, dim]
+
+           而 `fla.ops.linear_attn` 系列 kernel 期望的布局是：
+
+               [batch, seq, heads, dim]
+
+           所以在真正调用 kernel 之前，这里会显式做一次 `transpose(1, 2)`。
+           这一步很关键，否则状态会沿错误的维度累积。
+
+        2. recurrent state 透传
+           线性注意力在 decode 时依赖 recurrent state 作为历史压缩记忆。
+           这里同时兼容两套命名：
+
+           - `last_state` / `use_cache`
+           - `initial_state` / `output_final_state`
+
+           其中 `initial_state` 优先级更高；如果调用方显式传了它，就覆盖
+           `last_state`。同理，`output_final_state` 如果显式给出，也会覆盖
+           `use_cache`。这是为了和 `attention_forward_swaa()` 的调用接口保持
+           一致，避免 decode 阶段 state 被吞掉。
+
+        3. GQA 兼容
+           如果模型使用 grouped-query attention，那么 `q` 的 head 数会大于
+           `k/v` 的 head 数。为了匹配 FLA kernel 的逐 head 计算，这里会先把
+           `k/v` 按组扩展到和 `q` 相同的 head 数，再送入 kernel。
+
+        4. 可选 kernel 映射
+           `kernel_q` 和 `kernel_k` 用来对 `q/k` 做特征映射，例如 NIAH、
+           softplus、anchor 等实验里使用的 phi/kernel。`v` 不做变换。
+
+        5. 返回值
+           `o` 会在 kernel 输出后重新整理成：
+
+               [batch, seq, hidden]
+
+           其中 `hidden = heads * dim`，与主 attention 分支在输出投影前的形状
+           对齐，便于后续直接和 flash attention 结果融合。
+
+        参数：
+            q:
+                query 张量，形状为 `[B, Hq, T, D]`。
+            k:
+                key 张量，形状为 `[B, Hk, T, D]`。
+            v:
+                value 张量，形状为 `[B, Hk, T, D]`。
+            attention_mask:
+                可选的 padding mask，形状为 `[B, T_total]`。如果提供，会据此
+                计算 `cu_seqlens` 以支持 unpadded kernel 路径。
+            last_state:
+                旧接口名，对应上一时刻的 recurrent state。
+            use_cache:
+                旧接口名，表示是否请求 kernel 返回新的 recurrent state。
+            initial_state:
+                新接口名，对应本次 kernel 的初始 recurrent state。
+            output_final_state:
+                新接口名，表示是否返回本次更新后的 recurrent state。
+            mode:
+                linear attention kernel 模式，支持 `fused_recurrent`、
+                `fused_chunk`、`chunk`。若不指定，则短序列默认用
+                `fused_recurrent`，长序列默认用 `fused_chunk`。
+            kernel_q:
+                可选的 query 特征映射模块。
+            kernel_k:
+                可选的 key 特征映射模块。
+            **kwargs:
+                额外参数，目前主要使用其中的 `cu_seqlens`。
+
+        返回：
+            一个二元组 `(o, recurrent_state)`：
+
+            - `o`: 线性记忆分支输出，形状为 `[B, T, H*D]`
+            - `recurrent_state`: 本次 kernel 计算后的新状态；如果没有请求输出，
+              则可能为 `None`
+        """
         if attention_mask is not None:
             assert len(attention_mask.shape) == 2, (
                 "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
@@ -163,36 +249,36 @@ def linear_mem_ops(
                 "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
             )
 
-        _, num_attention_heads, q_len, _ = q.shape # shape (batch_size, num_attention_heads, seq_length, head_dim)
+        _, _, q_len, _ = q.shape  # 形状为 (batch_size, num_attention_heads, seq_length, head_dim)
 
-        # mode = 'fused_recurrent' if mode is None else mode
+        # 未显式指定 mode 时，短序列默认走 recurrent，长序列默认走 chunk。
         mode = mode if mode is not None else ('fused_recurrent' if q_len <= 64 else 'fused_chunk')
 
         cu_seqlens = kwargs.get('cu_seqlens')
         if attention_mask is not None:
             indices, cu_seqlens, _ = get_unpad_data(attention_mask[:, -q_len:])
-            # hidden_states = index_first_axis(rearrange(q, "b s ... -> (b s) ..."), indices).unsqueeze(0)
+            # 这里暂不需要真的构造 unpadded hidden_states，只需要 cu_seqlens 即可。
 
         recurrent_state = initial_state if initial_state is not None else last_state
-        output_final_state = use_cache if output_final_state is None else output_final_state
-
-        # Handle GQA: expand k, v to match q's number of heads
-        # q shape: (batch, num_heads, seq, head_dim)
-        # k, v shape: (batch, num_kv_heads, seq, head_dim)
-        num_kv_groups = num_attention_heads // k.shape[1]
+        output_final_state = bool(use_cache) if output_final_state is None else bool(output_final_state)
 
         if kernel_q is not None:
             q = kernel_q(q)
         if kernel_k is not None:
             k = kernel_k(k)
 
-        # ✨ 优化: 使用 repeat_interleave 替代 expand+reshape，更高效的内存布局
-        # 内存节省: ~50% (对于16k序列长度，从0.218 GB降至0.109 GB/层)
+        # 兼容 GQA：把 k/v 扩展到和 q 相同的 head 数。
+        # q 形状: (batch, num_heads, seq, head_dim)
+        # k/v 形状: (batch, num_kv_heads, seq, head_dim)
+        num_attention_heads = q.shape[1]
+        num_kv_groups = num_attention_heads // k.shape[1]
+
+        # 使用 repeat_interleave 获得更直接的内存布局，避免额外的 expand/reshape 组合。
         if num_kv_groups > 1:
             k = k.repeat_interleave(num_kv_groups, dim=1)
             v = v.repeat_interleave(num_kv_groups, dim=1)
 
-        # FLA linear attention kernels expect [batch, seq, heads, dim].
+        # FLA 的 linear attention kernel 期望输入布局为 [batch, seq, heads, dim]。
         q = q.transpose(1, 2).contiguous()
         k = k.transpose(1, 2).contiguous()
         v = v.transpose(1, 2).contiguous()
@@ -236,15 +322,6 @@ def linear_mem_ops(
         o = rearrange(o, 'b t h d -> b t (h d)')
         return o, recurrent_state
 
-def mem_proj(o_base: torch.Tensor, o_mem: torch.Tensor,eps = 1e-6) -> torch.Tensor:
-        # 投影系数
-        denom = (o_base * o_base).sum(dim=-1, keepdim=True).clamp_min(eps)
-        coeff = (o_mem * o_base).sum(dim=-1, keepdim=True) / denom
-
-        proj = coeff * o_base
-        delta_mem = o_mem - proj
-        return delta_mem
-
 def blend_linear_output(
     o_base: torch.Tensor,
     o_mem: torch.Tensor,
@@ -253,25 +330,103 @@ def blend_linear_output(
     blend_mode: str = "raw",
     eps: float = 1e-6,
 ) -> torch.Tensor:
+        """
+        将 flash attention 分支输出与 linear memory 分支输出做融合。
+
+        这个函数实际支持两大类策略：
+
+        1. `raw` 直接混合
+           把 `o_base` 和 `o_mem` 当成两条并列分支，按显式权重相加：
+
+               mixed = flash_attn_weight * o_base + linear_mem_weight * o_mem
+
+           这是 SWAA 最直接的融合方式，也保留了历史行为。
+           但它的风险是：`o_mem` 的范数在实际运行中可能明显大于 `o_base`，
+           因此即便 `linear_mem_weight` 看起来很小，也可能把最终分布拉偏。
+
+        2. 残差注入模式：`centered`、`orth`、`orth_match`
+           这几种模式不再把两条分支视作对等混合，而是把 flash attention
+           输出视为“主干基线”，把 linear memory 输出先变换成一个更稳定的
+           残差，再做小幅注入：
+
+               mixed = o_base + linear_mem_weight * delta_mem
+
+           在这些模式里，`flash_attn_weight` 会被有意忽略，因为目标不是重新
+           加权两条路径，而是尽量保持预训练 softmax attention 的原始分布，
+           只让 linear memory 提供一个受控的小修正。
+
+        各模式语义如下：
+
+        - `raw`
+          直接做加权和，不做任何稳定化处理。
+
+        - `centered`
+          先减去 `o_mem` 在最后一维上的均值，消除通道上的整体偏置：
+
+              delta_mem = o_mem - mean(o_mem)
+
+          适合抑制“所有维度一起整体抬高/压低”的漂移。
+
+        - `orth`
+          去掉 `o_mem` 中与 `o_base` 平行的分量，只保留相对于 `o_base`
+          的正交残差：
+
+              delta_mem = o_mem - proj_{o_base}(o_mem)
+
+          直觉上，如果 linear memory 只是顺着已有的 flash 输出方向继续放大，
+          那通常更像是对语言分布的扰动，而不是有价值的新信息。
+
+        - `orth_match`
+          先像 `orth` 一样取正交残差，再把这个残差的范数匹配到 `o_base`
+          的范数，最后再乘以外部系数 `linear_mem_weight`：
+
+              delta_mem = o_mem - proj_{o_base}(o_mem)
+              delta_mem = delta_mem * (||o_base|| / ||delta_mem||)
+
+          这样一来，最终注入强度就主要由 `linear_mem_weight` 控制。
+          例如 `linear_mem_weight=0.02` 时，注入量大致就是 base 范数的
+          `0.02x`，通常比 `raw` 混合稳定得多，更适合短 prompt 生成。
+
+        参数：
+            o_base:
+                flash attention 分支输出。形状应与输出投影前的 hidden state 一致。
+            o_mem:
+                linear memory 分支输出，形状必须与 `o_base` 相同。
+            flash_attn_weight:
+                仅在 `raw` 模式下生效，表示 flash attention 分支的权重。
+            linear_mem_weight:
+                在 `raw` 模式下表示 linear memory 分支权重；
+                在非 `raw` 模式下表示残差注入强度。
+            blend_mode:
+                融合方式。支持 `raw`、`centered`、`orth`、`orth_match`。
+            eps:
+                防止投影和范数匹配时除零的小常数。
+
+        返回：
+            与 `o_base` 形状和 dtype 一致的融合结果张量。
+        """
         if blend_mode == "raw":
             return o_base.mul(flash_attn_weight).add(o_mem, alpha=linear_mem_weight)
 
         base_f = o_base.float()
         mem_f = o_mem.float()
+        delta_mem = mem_f
 
         if blend_mode == "centered":
-            mem_f = mem_f - mem_f.mean(dim=-1, keepdim=True)
+            delta_mem = mem_f - mem_f.mean(dim=-1, keepdim=True)
         elif blend_mode == "orth":
-            mem_f = mem_proj(base_f, mem_f, eps=eps)
+            delta_mem = mem_proj(base_f, mem_f, eps=eps)
         elif blend_mode == "orth_match":
-            mem_f = mem_proj(base_f, mem_f, eps=eps)
-            mem_norm = mem_f.norm(dim=-1, keepdim=True).clamp_min(eps)
+            delta_mem = mem_proj(base_f, mem_f, eps=eps)
+            mem_norm = delta_mem.norm(dim=-1, keepdim=True).clamp_min(eps)
             base_norm = base_f.norm(dim=-1, keepdim=True).clamp_min(eps)
-            mem_f = mem_f * (base_norm / mem_norm)
+            delta_mem = delta_mem * (base_norm / mem_norm)
         else:
             raise ValueError(f"Unsupported linear_mem_blend_mode: {blend_mode}")
 
-        mixed = base_f + linear_mem_weight * mem_f
+        # 非 raw 模式都属于“残差注入”：保留 flash 输出作为主干分布，
+        # 只叠加一个小幅、经过稳定化处理的 linear memory 残差。
+        mixed = base_f + linear_mem_weight * delta_mem
         return mixed.to(o_base.dtype)
 
 def attention_forward_swaa(
@@ -358,10 +513,8 @@ def attention_forward_swaa(
             key_states_for_linear = key_states
             value_states_for_linear = value_states
 
-        if not past_key_values.is_recurrent_state_initialized(self.layer_idx):
-            last_state = past_key_values.state_update(None, self.layer_idx)
-
-        last_state = past_key_values.get_recurrent_state(self.layer_idx)
+        if past_key_values.is_recurrent_state_initialized(self.layer_idx):
+            last_state = past_key_values.get_recurrent_state(self.layer_idx)
     else:
         key_states_for_linear = key_states
         value_states_for_linear = value_states
@@ -434,14 +587,14 @@ def attention_forward_swaa(
             v=value_states_for_linear,
             initial_state=last_state,
             attention_mask=attention_mask,
-            output_final_state=True,
+            output_final_state=past_key_values is not None,
             mode=linear_mem_mode,
             kernel_q=linear_kernel_q,
             kernel_k=linear_kernel_k,
             **kwargs,
         )
 
-        if past_key_values is not None:
+        if past_key_values is not None and h is not None:
             past_key_values.state_update(h, self.layer_idx)
 
         o_linear = o
