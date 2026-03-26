@@ -32,6 +32,16 @@ from swaa_patch.kernel.NIAHKernel import PositionAwareKernel, DenseQueryKernel
 from swaa_patch.kernel.SoftplusKernel import GatedTopkSoftplusKernel, PowTopkSoftplusKernel
 # Global log file path
 EVAL_LOG_FILE = Path(__file__).parent.parent / "evaluation.log"
+SWAA_DECODE_NORM_STATE_KEY = "linear_k_sum_state"
+SWAA_DECODE_NORM_SCOPE = "cached_decode"
+_REQUIRED_SWAA_CACHE_METHODS = (
+    "state_update",
+    "is_recurrent_state_initialized",
+    "get_recurrent_state",
+    "linear_k_sum_state_update",
+    "is_linear_k_sum_state_initialized",
+    "get_linear_k_sum_state",
+)
 
 
 def _init_log_file():
@@ -145,6 +155,28 @@ def _serialize_runtime_value(value):
     if isinstance(value, torch.device):
         return str(value)
     return value
+
+
+def _validate_swaa_decode_norm_patch() -> dict:
+    """
+    Ensure eval uses the patched DynamicCache that carries decode norm-correction state.
+    """
+    cache = DynamicCache()
+    missing_cache_methods = [name for name in _REQUIRED_SWAA_CACHE_METHODS if not hasattr(cache, name)]
+    if missing_cache_methods:
+        raise RuntimeError(
+            "eval_swaa_model.py requires the current SWAA decode norm correction patch, "
+            f"but DynamicCache is missing methods: {missing_cache_methods}. "
+            "Expected `hack_kv_cache_recurrent_state()` to patch "
+            f"`{SWAA_DECODE_NORM_STATE_KEY}` support before evaluation."
+        )
+
+    return {
+        "decode_norm_correction": True,
+        "decode_norm_state_key": SWAA_DECODE_NORM_STATE_KEY,
+        "decode_norm_scope": SWAA_DECODE_NORM_SCOPE,
+        "required_cache_methods": list(_REQUIRED_SWAA_CACHE_METHODS),
+    }
 
 
 def _resolve_linear_kernel_defs(
@@ -358,6 +390,7 @@ class SWAAHFLM(LM):
         # Apply SWAA patches
         hack_kv_cache_recurrent_state()
         hack_hf_swaa(training=False)
+        self.swaa_runtime = _validate_swaa_decode_norm_patch()
 
         # Device setup
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -440,6 +473,9 @@ class SWAAHFLM(LM):
         print(f"  - linear_mem_weight: {linear_mem_weight}")
         print(f"  - linear_mem_mode: {linear_mem_mode}")
         print(f"  - linear_mem_blend_mode: {linear_mem_blend_mode}")
+        print(f"  - decode_norm_correction: {self.swaa_runtime['decode_norm_correction']}")
+        print(f"  - decode_norm_state_key: {self.swaa_runtime['decode_norm_state_key']}")
+        print(f"  - decode_norm_scope: {self.swaa_runtime['decode_norm_scope']}")
         print(f"  - mark: {self.swaa_config.mark}")
         print(f"\nLinear Kernel Configuration:")
         print(f"  - linear_kernel_family: {linear_kernel_family}")
@@ -462,7 +498,14 @@ class SWAAHFLM(LM):
 
     def _create_cache(self):
         """Create a new cache instance for each generation."""
-        return DynamicCache()
+        cache = DynamicCache()
+        missing_cache_methods = [name for name in _REQUIRED_SWAA_CACHE_METHODS if not hasattr(cache, name)]
+        if missing_cache_methods:
+            raise RuntimeError(
+                "DynamicCache lost required SWAA decode norm correction methods during evaluation: "
+                f"{missing_cache_methods}"
+            )
+        return cache
 
     def _model_call(
         self,
@@ -767,6 +810,10 @@ def run_evaluation(
     print(f"Tasks: {', '.join(tasks)}")
     print(f"Output Directory: {output_dir}")
     print(f"Timestamp: {timestamp}")
+    print(
+        "Decode Norm Correction: "
+        f"enabled (state={SWAA_DECODE_NORM_STATE_KEY}, scope={SWAA_DECODE_NORM_SCOPE})"
+    )
     print(f"{'='*80}\n")
 
     # Build model arguments
@@ -802,6 +849,12 @@ def run_evaluation(
         log_samples=True,  # Enable sample-level logging
         **kwargs,
     )
+    results["swaa_runtime"] = {
+        "decode_norm_correction": True,
+        "decode_norm_state_key": SWAA_DECODE_NORM_STATE_KEY,
+        "decode_norm_scope": SWAA_DECODE_NORM_SCOPE,
+        "required_cache_methods": list(_REQUIRED_SWAA_CACHE_METHODS),
+    }
 
     # Save complete results with samples
     results_file = output_path / f"results_{timestamp}.json"
@@ -817,6 +870,7 @@ def run_evaluation(
         "n-shot": results.get("n-shot", {}),
         "higher_is_better": results.get("higher_is_better", {}),
         "n-samples": results.get("n-samples", {}),
+        "swaa_runtime": results.get("swaa_runtime", {}),
     }
     summary_file = output_path / f"summary_{timestamp}.json"
     with open(summary_file, "w", encoding="utf-8") as f:

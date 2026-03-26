@@ -151,11 +151,14 @@ def linear_mem_ops(
     use_cache: bool | None = False,
     initial_state: torch.Tensor | None = None,
     output_final_state: bool | None = None,
+    initial_k_sum_state: torch.Tensor | None = None,
+    output_final_k_sum_state: bool | None = None,
     mode: str | None = None,
     kernel_q: Optional[nn.Module] = None,
     kernel_k: Optional[nn.Module] = None,
+    return_aux: bool = False,
         **kwargs: Unpack[dict],
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None] | tuple[torch.Tensor, torch.Tensor | None, dict[str, torch.Tensor | None]]:
         """
         执行 SWAA 的 linear memory 分支计算，并返回当前步的线性读出结果和新的 recurrent state。
 
@@ -250,6 +253,7 @@ def linear_mem_ops(
             )
 
         _, _, q_len, _ = q.shape  # 形状为 (batch_size, num_attention_heads, seq_length, head_dim)
+        eps = 1e-6
 
         # 未显式指定 mode 时，短序列默认走 recurrent，长序列默认走 chunk。
         mode = mode if mode is not None else ('fused_recurrent' if q_len <= 64 else 'fused_chunk')
@@ -261,6 +265,7 @@ def linear_mem_ops(
 
         recurrent_state = initial_state if initial_state is not None else last_state
         output_final_state = bool(use_cache) if output_final_state is None else bool(output_final_state)
+        output_final_k_sum_state = output_final_state if output_final_k_sum_state is None else bool(output_final_k_sum_state)
 
         if kernel_q is not None:
             q = kernel_q(q)
@@ -282,6 +287,31 @@ def linear_mem_ops(
         q = q.transpose(1, 2).contiguous()
         k = k.transpose(1, 2).contiguous()
         v = v.transpose(1, 2).contiguous()
+
+        current_valid_mask = None
+        if attention_mask is not None:
+            current_valid_mask = attention_mask[:, -q_len:].to(k.dtype).unsqueeze(-1).unsqueeze(-1)
+
+        def _compute_z(q_states: torch.Tensor, k_states: torch.Tensor, prev_k_sum: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+            q_f = q_states.float()
+            k_f = k_states.float()
+            if current_valid_mask is not None:
+                k_f = k_f * current_valid_mask.float()
+                q_f = q_f * current_valid_mask.float()
+            k_cumsum = k_f.cumsum(dim=1)
+            z_cur = (q_f * k_cumsum).sum(dim=-1, keepdim=True)
+            if prev_k_sum is not None:
+                z_full = (q_f * (k_cumsum + prev_k_sum.float().unsqueeze(1))).sum(dim=-1, keepdim=True)
+            else:
+                z_full = z_cur
+            return z_cur, z_full
+
+        def _compute_final_k_sum(k_states: torch.Tensor, prev_k_sum: torch.Tensor | None = None) -> torch.Tensor:
+            k_f = k_states.float()
+            if current_valid_mask is not None:
+                k_f = k_f * current_valid_mask.float()
+            delta = k_f.sum(dim=1)
+            return delta if prev_k_sum is None else (prev_k_sum.float() + delta)
 
         if mode == 'fused_recurrent':
             o, recurrent_state = fused_recurrent_linear_attn(
@@ -319,7 +349,17 @@ def linear_mem_ops(
         else:
             raise NotImplementedError(f"Not supported mode `{mode}`.")
 
+        if initial_k_sum_state is not None:
+            z_cur, z_full = _compute_z(q, k, initial_k_sum_state)
+            correction = z_cur / z_full.clamp_min(eps)
+            o = o.float() * correction
+            o = o.to(v.dtype)
+
+        final_k_sum_state = _compute_final_k_sum(k, initial_k_sum_state) if output_final_k_sum_state else None
+
         o = rearrange(o, 'b t h d -> b t (h d)')
+        if return_aux:
+            return o, recurrent_state, {"final_k_sum_state": final_k_sum_state}
         return o, recurrent_state
 
 def mem_proj(o_base: torch.Tensor, o_mem: torch.Tensor,eps = 1e-6) -> torch.Tensor:
@@ -503,6 +543,7 @@ def attention_forward_swaa(
     cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
     last_state = None
+    last_k_sum_state = None
 
     if past_key_values is not None:
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
@@ -524,6 +565,8 @@ def attention_forward_swaa(
 
         if past_key_values.is_recurrent_state_initialized(self.layer_idx):
             last_state = past_key_values.get_recurrent_state(self.layer_idx)
+        if hasattr(past_key_values, "is_linear_k_sum_state_initialized") and past_key_values.is_linear_k_sum_state_initialized(self.layer_idx):
+            last_k_sum_state = past_key_values.get_linear_k_sum_state(self.layer_idx)
     else:
         key_states_for_linear = key_states
         value_states_for_linear = value_states
@@ -589,22 +632,27 @@ def attention_forward_swaa(
 
     # ===================================================================#
     if enable_linear_mem:
-        o,h = linear_mem_ops(
+        o,h,aux = linear_mem_ops(
             self,
             q=query_states,
             k=key_states_for_linear,
             v=value_states_for_linear,
             initial_state=last_state,
+            initial_k_sum_state=last_k_sum_state,
             attention_mask=attention_mask,
             output_final_state=past_key_values is not None,
+            output_final_k_sum_state=past_key_values is not None,
             mode=linear_mem_mode,
             kernel_q=linear_kernel_q,
             kernel_k=linear_kernel_k,
+            return_aux=True,
             **kwargs,
         )
 
         if past_key_values is not None and h is not None:
             past_key_values.state_update(h, self.layer_idx)
+        if past_key_values is not None and aux.get("final_k_sum_state") is not None and hasattr(past_key_values, "linear_k_sum_state_update"):
+            past_key_values.linear_k_sum_state_update(aux["final_k_sum_state"], self.layer_idx)
 
         o_linear = o
         attn_output = attn_output.reshape(*input_shape, -1)

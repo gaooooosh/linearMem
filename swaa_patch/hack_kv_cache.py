@@ -45,6 +45,13 @@ def _init_k_norm_cache(self: CacheLayerMixin) -> None:
         self.k_norm_cache_initialized = False
 
 
+def _init_linear_k_sum_state(self: CacheLayerMixin) -> None:
+    """Initialize the cumulative transformed-k state used for decode normalization."""
+    if not hasattr(self, 'linear_k_sum_state') or self.linear_k_sum_state is None:
+        self.linear_k_sum_state = None
+        self.linear_k_sum_state_initialized = False
+
+
 def _init_hash_mem(self: CacheLayerMixin) -> None:
     """Initialize the hash_mem container if not exists.
 
@@ -70,6 +77,8 @@ def dynamic_layer_lazy_init_swaa(
     _init_recurrent_state(self)
     # Initialize k_norm cache container
     _init_k_norm_cache(self)
+    # Initialize cumulative transformed-k state
+    _init_linear_k_sum_state(self)
     # Initialize hash_mem container
     _init_hash_mem(self)
 
@@ -104,6 +113,10 @@ def dynamic_layer_update_swaa(
     if not hasattr(self, 'k_norm_cache'):
         _init_k_norm_cache(self)
 
+    # Lazy initialization for decode denominator state
+    if not hasattr(self, 'linear_k_sum_state'):
+        _init_linear_k_sum_state(self)
+
     # Lazy initialization for hash_mem
     if not hasattr(self, 'hash_mem'):
         _init_hash_mem(self)
@@ -127,6 +140,9 @@ def dynamic_layer_reset_swaa(self: DynamicLayer) -> None:
     if hasattr(self, 'k_norm_cache'):
         self.k_norm_cache = None
         self.k_norm_cache_initialized = False
+    if hasattr(self, 'linear_k_sum_state'):
+        self.linear_k_sum_state = None
+        self.linear_k_sum_state_initialized = False
     if hasattr(self, 'hash_mem'):
         self.hash_mem = {}
         self.hash_mem_initialized = False
@@ -141,6 +157,7 @@ def sliding_layer_lazy_init_swaa(
     _original_sliding_layer_lazy_init(self, key_states, value_states)
     _init_recurrent_state(self)
     _init_k_norm_cache(self)
+    _init_linear_k_sum_state(self)
     _init_hash_mem(self)
 
 
@@ -156,6 +173,9 @@ def sliding_layer_update_swaa(
 
     if not hasattr(self, 'k_norm_cache'):
         _init_k_norm_cache(self)
+
+    if not hasattr(self, 'linear_k_sum_state'):
+        _init_linear_k_sum_state(self)
 
     if not hasattr(self, 'hash_mem'):
         _init_hash_mem(self)
@@ -177,6 +197,9 @@ def sliding_layer_reset_swaa(self: DynamicSlidingWindowLayer) -> None:
     if hasattr(self, 'k_norm_cache'):
         self.k_norm_cache = None
         self.k_norm_cache_initialized = False
+    if hasattr(self, 'linear_k_sum_state'):
+        self.linear_k_sum_state = None
+        self.linear_k_sum_state_initialized = False
     if hasattr(self, 'hash_mem'):
         self.hash_mem = {}
         self.hash_mem_initialized = False
@@ -191,6 +214,7 @@ def quantized_layer_lazy_init_swaa(
     _original_quantized_layer_lazy_init(self, key_states, value_states)
     _init_recurrent_state(self)
     _init_k_norm_cache(self)
+    _init_linear_k_sum_state(self)
     _init_hash_mem(self)
 
 
@@ -206,6 +230,9 @@ def quantized_layer_update_swaa(
 
     if not hasattr(self, 'k_norm_cache'):
         _init_k_norm_cache(self)
+
+    if not hasattr(self, 'linear_k_sum_state'):
+        _init_linear_k_sum_state(self)
 
     if not hasattr(self, 'hash_mem'):
         _init_hash_mem(self)
@@ -227,6 +254,9 @@ def quantized_layer_reset_swaa(self: QuantizedLayer) -> None:
     if hasattr(self, 'k_norm_cache'):
         self.k_norm_cache = None
         self.k_norm_cache_initialized = False
+    if hasattr(self, 'linear_k_sum_state'):
+        self.linear_k_sum_state = None
+        self.linear_k_sum_state_initialized = False
     if hasattr(self, 'hash_mem'):
         self.hash_mem = {}
         self.hash_mem_initialized = False
@@ -300,6 +330,72 @@ def is_k_norm_cache_initialized(self: CacheLayerMixin) -> bool:
         `bool`: True if the k_norm cache has been set, False otherwise.
     """
     return getattr(self, 'k_norm_cache_initialized', False)
+
+
+# ============== Decode Denominator State Methods ==============
+
+def get_linear_k_sum_state(self: CacheLayerMixin) -> torch.Tensor | None:
+    """
+    Get the cumulative transformed-k state for this cache layer.
+
+    Returns:
+        The cumulative transformed-k sum tensor with shape `[B, H, D]`, or
+        None if not initialized.
+    """
+    return getattr(self, 'linear_k_sum_state', None)
+
+
+def set_linear_k_sum_state(
+    self: CacheLayerMixin,
+    state: torch.Tensor | None,
+) -> None:
+    """
+    Set the cumulative transformed-k state for this cache layer.
+
+    Args:
+        state: The new cumulative transformed-k sum tensor or None to clear.
+    """
+    self.linear_k_sum_state = state
+    self.linear_k_sum_state_initialized = state is not None
+
+
+def is_linear_k_sum_state_initialized(self: CacheLayerMixin) -> bool:
+    """
+    Check if the cumulative transformed-k state has been initialized.
+
+    Returns:
+        `bool`: True if the state has been set, False otherwise.
+    """
+    return getattr(self, 'linear_k_sum_state_initialized', False)
+
+
+def linear_k_sum_state_update(
+    self: CacheLayerMixin,
+    state: torch.Tensor | None,
+    cache_kwargs: dict[str, Any] | None = None,
+) -> torch.Tensor | None:
+    """
+    Update the cumulative transformed-k state in-place and return the current value.
+
+    Args:
+        state (`torch.Tensor`, *optional*):
+            The new cumulative transformed-k state. If None, no update is
+            performed and the current value is returned.
+        cache_kwargs (`dict[str, Any]`, *optional*):
+            Reserved for future use.
+
+    Returns:
+        `torch.Tensor` or `None`:
+            The current cumulative transformed-k state after update.
+    """
+    if not hasattr(self, 'linear_k_sum_state'):
+        _init_linear_k_sum_state(self)
+
+    if state is not None:
+        self.linear_k_sum_state = state
+        self.linear_k_sum_state_initialized = True
+
+    return self.linear_k_sum_state
 
 
 # ============== Hash State Methods ==============
@@ -725,6 +821,60 @@ def cache_get_k_norm_cache(
     return self.layers[layer_idx].get_k_norm_cache()
 
 
+def cache_linear_k_sum_state_update(
+    self,
+    state: torch.Tensor | None,
+    layer_idx: int,
+    cache_kwargs: dict[str, Any] | None = None,
+) -> torch.Tensor | None:
+    """
+    Update the cumulative transformed-k state for a specific layer in the cache.
+
+    Args:
+        state (`torch.Tensor`, *optional*):
+            The new cumulative transformed-k state.
+        layer_idx (`int`):
+            The index of the layer to update.
+        cache_kwargs (`dict[str, Any]`, *optional*):
+            Additional arguments passed to the layer method.
+
+    Returns:
+        `torch.Tensor` or `None`:
+            The cumulative transformed-k state for the specified layer.
+    """
+    while len(self.layers) <= layer_idx:
+        if hasattr(self, 'layer_class_to_replicate'):
+            self.layers.append(self.layer_class_to_replicate())
+        else:
+            raise IndexError(f"Layer {layer_idx} does not exist and cannot be created lazily")
+
+    return self.layers[layer_idx].linear_k_sum_state_update(state, cache_kwargs)
+
+
+def cache_is_linear_k_sum_state_initialized(
+    self,
+    layer_idx: int,
+) -> bool:
+    """
+    Check if the cumulative transformed-k state for a specific layer has been initialized.
+    """
+    if layer_idx >= len(self.layers):
+        return False
+    return self.layers[layer_idx].is_linear_k_sum_state_initialized()
+
+
+def cache_get_linear_k_sum_state(
+    self,
+    layer_idx: int,
+) -> torch.Tensor | None:
+    """
+    Get the cumulative transformed-k state for a specific layer in the cache.
+    """
+    if layer_idx >= len(self.layers):
+        return None
+    return self.layers[layer_idx].get_linear_k_sum_state()
+
+
 def cache_get_recurrent_state(
     self,
     layer_idx: int,
@@ -915,7 +1065,7 @@ def cache_hash_state_update(
 def hack_kv_cache_recurrent_state():
     """
     Apply monkey patch to transformers KV Cache layers to support recurrent state,
-    k_norm cache, and hash state.
+    k_norm cache, decode denominator state, and hash state.
 
     This patches the following classes:
     - DynamicLayer
@@ -938,6 +1088,13 @@ def hack_kv_cache_recurrent_state():
     - `k_norm_update(k_norm, cache_kwargs)` method to update and return cache
     - `is_k_norm_cache_initialized()` method to check initialization status
 
+    - `linear_k_sum_state` attribute for storing cumulative transformed-k sums
+    - `linear_k_sum_state_initialized` attribute (bool)
+    - `get_linear_k_sum_state()` method to retrieve the state
+    - `set_linear_k_sum_state(state)` method to set the state
+    - `linear_k_sum_state_update(state, cache_kwargs)` method to update and return state
+    - `is_linear_k_sum_state_initialized()` method to check initialization status
+
     - `hash_mem` attribute for storing hash state (dict[int -> dict])
     - `hash_mem_initialized` attribute (bool) indicating if state has been set
     - `get_hash_state(layer_idx)` method to retrieve hash state
@@ -949,6 +1106,10 @@ def hack_kv_cache_recurrent_state():
     The Cache class will have:
     - `state_update(state, layer_idx, cache_kwargs)` method for layer-indexed updates
     - `k_norm_update(k_norm, layer_idx, cache_kwargs)` method for layer-indexed k_norm updates
+    - `linear_k_sum_state_update(state, layer_idx, cache_kwargs)` method for
+      layer-indexed decode denominator-state updates
+    - `is_linear_k_sum_state_initialized(layer_idx)` method for layer-indexed checks
+    - `get_linear_k_sum_state(layer_idx)` method for layer-indexed retrieval
     - `get_hash_state(layer_idx)` method for layer-indexed hash state retrieval
     - `set_hash_state(layer_idx, state_dict)` method for layer-indexed hash state setting
     - `is_hash_state_initialized(layer_idx)` method for layer-indexed hash state check
@@ -999,21 +1160,36 @@ def hack_kv_cache_recurrent_state():
     DynamicLayer.set_k_norm_cache = set_k_norm_cache
     DynamicLayer.k_norm_update = k_norm_update
     DynamicLayer.is_k_norm_cache_initialized = is_k_norm_cache_initialized
+    DynamicLayer.get_linear_k_sum_state = get_linear_k_sum_state
+    DynamicLayer.set_linear_k_sum_state = set_linear_k_sum_state
+    DynamicLayer.linear_k_sum_state_update = linear_k_sum_state_update
+    DynamicLayer.is_linear_k_sum_state_initialized = is_linear_k_sum_state_initialized
 
     DynamicSlidingWindowLayer.get_k_norm_cache = get_k_norm_cache
     DynamicSlidingWindowLayer.set_k_norm_cache = set_k_norm_cache
     DynamicSlidingWindowLayer.k_norm_update = k_norm_update
     DynamicSlidingWindowLayer.is_k_norm_cache_initialized = is_k_norm_cache_initialized
+    DynamicSlidingWindowLayer.get_linear_k_sum_state = get_linear_k_sum_state
+    DynamicSlidingWindowLayer.set_linear_k_sum_state = set_linear_k_sum_state
+    DynamicSlidingWindowLayer.linear_k_sum_state_update = linear_k_sum_state_update
+    DynamicSlidingWindowLayer.is_linear_k_sum_state_initialized = is_linear_k_sum_state_initialized
 
     QuantizedLayer.get_k_norm_cache = get_k_norm_cache
     QuantizedLayer.set_k_norm_cache = set_k_norm_cache
     QuantizedLayer.k_norm_update = k_norm_update
     QuantizedLayer.is_k_norm_cache_initialized = is_k_norm_cache_initialized
+    QuantizedLayer.get_linear_k_sum_state = get_linear_k_sum_state
+    QuantizedLayer.set_linear_k_sum_state = set_linear_k_sum_state
+    QuantizedLayer.linear_k_sum_state_update = linear_k_sum_state_update
+    QuantizedLayer.is_linear_k_sum_state_initialized = is_linear_k_sum_state_initialized
 
     # Patch k_norm cache methods for Cache class
     Cache.k_norm_update = cache_k_norm_update
     Cache.is_k_norm_cache_initialized = cache_is_k_norm_cache_initialized
     Cache.get_k_norm_cache = cache_get_k_norm_cache
+    Cache.linear_k_sum_state_update = cache_linear_k_sum_state_update
+    Cache.is_linear_k_sum_state_initialized = cache_is_linear_k_sum_state_initialized
+    Cache.get_linear_k_sum_state = cache_get_linear_k_sum_state
 
     # Patch hash state methods for Layer classes
     DynamicLayer.get_hash_state = get_hash_state
@@ -1041,7 +1217,7 @@ def hack_kv_cache_recurrent_state():
     Cache.clear_hash_state = cache_clear_hash_state
     Cache.hash_state_update = cache_hash_state_update
 
-    print("Hacked transformers KV Cache layers to support recurrent state, k_norm cache, and hash state for linear attention.")
+    print("Hacked transformers KV Cache layers to support recurrent state, k_norm cache, linear_k_sum_state, and hash state for linear attention.")
 
 
 def unhack_kv_cache_recurrent_state():
@@ -1104,6 +1280,12 @@ def unhack_kv_cache_recurrent_state():
         delattr(Cache, 'is_k_norm_cache_initialized')
     if hasattr(Cache, 'get_k_norm_cache'):
         delattr(Cache, 'get_k_norm_cache')
+    if hasattr(Cache, 'linear_k_sum_state_update'):
+        delattr(Cache, 'linear_k_sum_state_update')
+    if hasattr(Cache, 'is_linear_k_sum_state_initialized'):
+        delattr(Cache, 'is_linear_k_sum_state_initialized')
+    if hasattr(Cache, 'get_linear_k_sum_state'):
+        delattr(Cache, 'get_linear_k_sum_state')
     if hasattr(Cache, 'get_hash_state'):
         delattr(Cache, 'get_hash_state')
     if hasattr(Cache, 'set_hash_state'):
@@ -1125,6 +1307,14 @@ def unhack_kv_cache_recurrent_state():
             delattr(layer_class, 'k_norm_update')
         if hasattr(layer_class, 'is_k_norm_cache_initialized'):
             delattr(layer_class, 'is_k_norm_cache_initialized')
+        if hasattr(layer_class, 'get_linear_k_sum_state'):
+            delattr(layer_class, 'get_linear_k_sum_state')
+        if hasattr(layer_class, 'set_linear_k_sum_state'):
+            delattr(layer_class, 'set_linear_k_sum_state')
+        if hasattr(layer_class, 'linear_k_sum_state_update'):
+            delattr(layer_class, 'linear_k_sum_state_update')
+        if hasattr(layer_class, 'is_linear_k_sum_state_initialized'):
+            delattr(layer_class, 'is_linear_k_sum_state_initialized')
 
     # Remove hash state methods from layer classes
     for layer_class in [DynamicLayer, DynamicSlidingWindowLayer, QuantizedLayer]:

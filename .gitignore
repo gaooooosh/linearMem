@@ -13,3 +13,5 @@ analyze_qkv_distribution.py
 paper_draft_sequence_mixed_attention.md
 experiments/*
 reaserch_report/*
+eval/scripts/__pycache__/*
+swaa_patch/__pycache__/*
