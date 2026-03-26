@@ -39,12 +39,23 @@ python eval/scripts/eval_swaa_model.py \
     --batch_size 4 \
     --device cuda:0 \
     --torch_dtype bfloat16 \
+    --attn_implementation flash_attention_2 \
     --num_fewshot 5 \
     --sliding_window_size 2048 \
     --keep_first 4 \
-    --enable_linear_mem \
+    --linear_mem_mode fused_chunk \
+    --linear_mem_blend_mode orth_match \
+    --linear_kernel_family softplus \
     --flash_attn_weight 0.9 \
     --linear_mem_weight 0.1
+```
+
+```bash
+# 禁用 linear memory
+python eval/scripts/eval_swaa_model.py \
+    --model_path ./your_model \
+    --tasks hellaswag \
+    --disable_linear_mem
 ```
 
 ### 测试模式（限制样本数）
@@ -141,6 +152,7 @@ python eval/scripts/eval_swaa_model.py \
 | `--batch_size` | 1 | 批处理大小 |
 | `--device` | `cuda:0` | 运行设备 |
 | `--torch_dtype` | `bfloat16` | 数据类型（float32/float16/bfloat16） |
+| `--attn_implementation` | `flash_attention_2` | attention 后端（flash_attention_2/eager/sdpa） |
 | `--num_fewshot` | None | Few-shot 示例数量 |
 | `--limit` | None | 限制每个任务的样本数（用于测试） |
 
@@ -151,10 +163,17 @@ python eval/scripts/eval_swaa_model.py \
 | `--sliding_window_size` | 2048 | 滑动窗口大小 |
 | `--keep_first` | 4 | 保留的前 N 个 token |
 | `--force_fa_decode` | False | 强制使用 Flash Attention 解码 |
+| `--force_fa_decode_layers` | None | 指定哪些层强制 full-attention decode |
 | `--non_sliding_layers` | [] | 不使用滑动窗口的层 |
 | `--enable_linear_mem` | True | 启用线性记忆机制 |
+| `--disable_linear_mem` | False | 禁用线性记忆机制 |
 | `--flash_attn_weight` | 0.9 | Flash Attention 权重 |
 | `--linear_mem_weight` | 0.1 | 线性记忆权重 |
+| `--linear_mem_mode` | `fused_recurrent` | Linear Memory 执行模式 |
+| `--linear_mem_blend_mode` | `raw` | flash attention 与 linear memory 的融合方式 |
+| `--linear_kernel_family` | `softplus` | linear memory 使用的 kernel 族（softplus/niah/anchor/none） |
+| `--num_anchors` | 64 | Anchor kernel 的 anchor 数，仅 `anchor` 模式生效 |
+| `--tau` | 20.0 | Anchor kernel 温度，仅 `anchor` 模式生效 |
 
 ## 常见任务列表
 

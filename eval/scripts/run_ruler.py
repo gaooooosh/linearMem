@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import and register custom model BEFORE importing lm_eval
-from eval_swaa_model import SWAAHFLM
+from eval_swaa_model import SWAAHFLM, resolve_linear_kernel_specs, try_get_model_head_dim
 
 from lm_eval import evaluator
 from lm_eval.utils import make_table, handle_non_serializable
@@ -62,6 +62,46 @@ def run_ruler_evaluation(args):
     print("RULER 长文本评测")
     print("=" * 80)
 
+    resolved_head_dim = try_get_model_head_dim(args.model)
+
+    model_args = {
+        "pretrained": args.model,
+        "torch_dtype": args.dtype,
+        "attn_implementation": args.attn,
+        "sliding_window_size": args.sliding_window,
+        "keep_first": args.keep_first,
+        "enable_linear_mem": args.enable_linear_mem,
+        "non_sliding_layers": args.non_sliding_layers,
+        "force_fa_decode": False,
+        "max_chunk_size": args.max_chunk_size,
+        "flash_attn_weight": args.flash_attn_weight,
+        "linear_mem_weight": args.linear_mem_weight,
+        "linear_mem_mode": args.linear_mem_mode,
+        "linear_mem_blend_mode": args.linear_mem_blend_mode,
+        "linear_kernel_family": args.linear_kernel_family,
+        "num_anchors": args.num_anchors,
+        "tau": args.tau,
+    }
+    kernel_q_spec, kernel_k_spec = resolve_linear_kernel_specs(
+        kernel_family=args.linear_kernel_family,
+        num_anchors=args.num_anchors,
+        tau=args.tau,
+        head_dim=resolved_head_dim,
+        device=args.device,
+        dtype=args.dtype,
+    )
+    swaa_config = {
+        "sliding_window_size": args.sliding_window,
+        "keep_first": args.keep_first,
+        "force_fa_decode": False,
+        "non_sliding_layers": list(args.non_sliding_layers),
+        "enable_linear_mem": args.enable_linear_mem,
+        "flash_attn_weight": args.flash_attn_weight,
+        "linear_mem_weight": args.linear_mem_weight,
+        "linear_mem_mode": args.linear_mem_mode,
+        "linear_mem_blend_mode": args.linear_mem_blend_mode,
+    }
+
     # 构建完整配置
     config = {
         "model": args.model,
@@ -73,6 +113,8 @@ def run_ruler_evaluation(args):
         "flash_attn_weight": args.flash_attn_weight,
         "linear_mem_weight": args.linear_mem_weight,
         "linear_mem_mode": args.linear_mem_mode,
+        "linear_mem_blend_mode": args.linear_mem_blend_mode,
+        "linear_kernel_family": args.linear_kernel_family,
         "num_anchors": args.num_anchors,
         "tau": args.tau,
         "device": args.device,
@@ -81,6 +123,15 @@ def run_ruler_evaluation(args):
         "batch_size": args.batch_size,
         "limit": args.limit,
         "timestamp": datetime.now().isoformat(),
+        "max_chunk_size": args.max_chunk_size,
+        "output_dir": args.output_dir,
+        "no_linear_mem": args.no_linear_mem,
+        "resolved_model_head_dim": resolved_head_dim,
+        "cli_args": dict(vars(args)),
+        "effective_model_args": model_args,
+        "effective_swaa_config": swaa_config,
+        "kernel_q_spec": kernel_q_spec,
+        "kernel_k_spec": kernel_k_spec,
     }
 
     # 打印配置
@@ -94,13 +145,19 @@ def run_ruler_evaluation(args):
     print(f"  Flash Attention权重: {config['flash_attn_weight']}")
     print(f"  Linear Memory权重: {config['linear_mem_weight']}")
     print(f"  Linear Memory模式: {config['linear_mem_mode']}")
+    print(f"  Linear Memory融合方式: {config['linear_mem_blend_mode']}")
+    print(f"  Linear Kernel族: {config['linear_kernel_family']}")
     print(f"  Anchor数量: {config['num_anchors']}")
     print(f"  Anchor温度参数: {config['tau']}")
+    print(f"  模型head_dim: {config['resolved_model_head_dim']}")
     print(f"  设备: {config['device']}")
     print(f"  数据类型: {config['dtype']}")
     print(f"  注意力实现: {config['attn_implementation']}")
     print(f"  批次大小: {config['batch_size']}")
     print(f"  每任务样本数: {config['limit']}")
+    print(f"  最大分块大小: {config['max_chunk_size']}")
+    print(f"  Q Kernel: {json.dumps(config['kernel_q_spec'], ensure_ascii=False)}")
+    print(f"  K Kernel: {json.dumps(config['kernel_k_spec'], ensure_ascii=False)}")
 
     print(f"\n📊 评测任务 ({len(RULER_TASKS)} 个):")
     for task in RULER_TASKS:
@@ -109,23 +166,6 @@ def run_ruler_evaluation(args):
     # 构建模型参数
     # 注意：所有参数必须是可哈希的类型，因为 lm-eval 会将 model_args 传递给 custom_dataset
     # 而 custom_dataset 中的 get_tokenizer 使用了 @cache 装饰器
-    model_args = {
-        "pretrained": args.model,
-        "torch_dtype": args.dtype,
-        "attn_implementation": args.attn,
-        "sliding_window_size": args.sliding_window,
-        "keep_first": args.keep_first,
-        "enable_linear_mem": args.enable_linear_mem,
-        # non_sliding_layers 已经是元组（在第464行转换）
-        "non_sliding_layers": args.non_sliding_layers,
-        "force_fa_decode": False,
-        "max_chunk_size": args.max_chunk_size,
-        "flash_attn_weight": args.flash_attn_weight,
-        "linear_mem_weight": args.linear_mem_weight,
-        "linear_mem_mode": args.linear_mem_mode,
-        "num_anchors": args.num_anchors,
-        "tau": args.tau,
-    }
 
     # 生成参数
     gen_kwargs = {
@@ -294,13 +334,41 @@ def generate_report(results: dict, output_dir: Path, config: dict):
         f.write(f"| Flash Attention权重 | {config['flash_attn_weight']} |\n")
         f.write(f"| Linear Memory权重 | {config['linear_mem_weight']} |\n")
         f.write(f"| Linear Memory模式 | {config['linear_mem_mode']} |\n")
+        f.write(f"| Linear Memory融合方式 | {config['linear_mem_blend_mode']} |\n")
+        f.write(f"| Linear Kernel族 | {config['linear_kernel_family']} |\n")
         f.write(f"| Anchor数量 | {config['num_anchors']} |\n")
         f.write(f"| Anchor温度参数 | {config['tau']} |\n")
+        f.write(f"| 模型head_dim | {config['resolved_model_head_dim']} |\n")
         f.write(f"| 设备 | {config['device']} |\n")
         f.write(f"| 数据类型 | {config['dtype']} |\n")
         f.write(f"| 注意力实现 | {config['attn_implementation']} |\n")
         f.write(f"| 批次大小 | {config['batch_size']} |\n")
         f.write(f"| 每任务样本数 | {config['limit']} |\n\n")
+
+        f.write("### Q Kernel\n\n")
+        f.write("```json\n")
+        f.write(json.dumps(config["kernel_q_spec"], indent=2, ensure_ascii=False))
+        f.write("\n```\n\n")
+
+        f.write("### K Kernel\n\n")
+        f.write("```json\n")
+        f.write(json.dumps(config["kernel_k_spec"], indent=2, ensure_ascii=False))
+        f.write("\n```\n\n")
+
+        f.write("### 完整 CLI 参数\n\n")
+        f.write("```json\n")
+        f.write(json.dumps(config["cli_args"], indent=2, ensure_ascii=False))
+        f.write("\n```\n\n")
+
+        f.write("### 实际传给模型的参数\n\n")
+        f.write("```json\n")
+        f.write(json.dumps(config["effective_model_args"], indent=2, ensure_ascii=False))
+        f.write("\n```\n\n")
+
+        f.write("### 实际 SWAA 配置\n\n")
+        f.write("```json\n")
+        f.write(json.dumps(config["effective_swaa_config"], indent=2, ensure_ascii=False))
+        f.write("\n```\n\n")
 
         # 评测结果
         if "results" in results:
@@ -515,16 +583,30 @@ def main():
         help="Linear Memory 操作模式 (默认: fused_recurrent)",
     )
     parser.add_argument(
+        "--linear-mem-blend-mode",
+        type=str,
+        default="raw",
+        choices=["raw", "centered", "orth", "orth_match"],
+        help="Linear Memory 与 flash attention 的融合方式 (默认: raw)",
+    )
+    parser.add_argument(
+        "--linear-kernel-family",
+        type=str,
+        default="softplus",
+        choices=["softplus", "niah", "anchor", "none"],
+        help="Linear Memory 使用的 kernel 族 (默认: softplus)",
+    )
+    parser.add_argument(
         "--num-anchors",
         type=int,
         default=64,
-        help="Anchor 数量 (默认: 64)",
+        help="Anchor 数量，仅在 --linear-kernel-family anchor 时生效 (默认: 64)",
     )
     parser.add_argument(
         "--tau",
         type=float,
         default=20.0,
-        help="Anchor kernel 的温度参数 (默认: 20.0)",
+        help="Anchor kernel 的温度参数，仅在 --linear-kernel-family anchor 时生效 (默认: 20.0)",
     )
 
     # 输出配置

@@ -109,8 +109,8 @@ def main():
         force_fa_decode=False,
         non_sliding_layers=[],
         enable_linear_mem=True,
-        flash_attn_weight=1.0,
-        linear_mem_weight=0.02,
+        flash_attn_weight=0.8,
+        linear_mem_weight=0.2,
         linear_mem_mode="fused_chunk",
         linear_mem_blend_mode="orth_match",
 

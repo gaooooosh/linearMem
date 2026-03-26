@@ -9,6 +9,7 @@ supporting various attention mechanisms and cache strategies.
 import os
 import sys
 import json
+import ast
 import argparse
 from pathlib import Path
 
@@ -20,13 +21,14 @@ import torch
 from datetime import datetime
 from typing import Optional, List, Tuple
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from lm_eval import simple_evaluate
 from lm_eval.utils import handle_non_serializable
 from swaa_patch import SWAAConfig, hack_hf_swaa, hack_kv_cache_recurrent_state
 from swaa_patch.kernel.AnchorKernel import AnchorKernel
+from swaa_patch.kernel.NIAHKernel import PositionAwareKernel, DenseQueryKernel
 from swaa_patch.kernel.SoftplusKernel import GatedTopkSoftplusKernel, PowTopkSoftplusKernel
 # Global log file path
 EVAL_LOG_FILE = Path(__file__).parent.parent / "evaluation.log"
@@ -49,6 +51,252 @@ def _log_sample(method: str, idx: int, input_len: int, output: str, extra_info: 
             f.write(f"  {extra_info}\n")
         f.write(f"  Output: {output[:500]}{'...' if len(output) > 500 else ''}\n")
         f.write(f"  {'-'*60}\n")
+
+
+def _parse_bool(value) -> bool:
+    """Parse common bool-like values passed through CLI or lm-eval model_args."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _parse_int_list(value) -> List[int]:
+    """Parse ints from Python-list strings, tuples, or comma/space separated strings."""
+    if value is None:
+        return []
+    if isinstance(value, int):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [int(item) for item in value]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = ast.literal_eval(stripped)
+        except (ValueError, SyntaxError):
+            parsed = None
+
+        if isinstance(parsed, int):
+            return [parsed]
+        if isinstance(parsed, (list, tuple)):
+            return [int(item) for item in parsed]
+
+        cleaned = stripped.replace(",", " ")
+        return [int(item) for item in cleaned.split() if item]
+
+    raise TypeError(f"Unsupported list value type: {type(value)!r}")
+
+
+def _parse_force_fa_decode(value) -> bool | List[int]:
+    """
+    force_fa_decode supports either a global bool or a per-layer list in SWAAConfig.
+    """
+    if isinstance(value, (list, tuple)):
+        parsed = _parse_int_list(value)
+        return parsed if parsed else False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+        parsed = _parse_int_list(value)
+        return parsed if parsed else False
+    return bool(value)
+
+
+def _get_head_dim(config) -> int:
+    """Infer head_dim for configs that do not expose it directly."""
+    head_dim = getattr(config, "head_dim", None)
+    if head_dim is not None:
+        return head_dim
+
+    hidden_size = getattr(config, "hidden_size", None)
+    num_attention_heads = getattr(config, "num_attention_heads", None)
+    if hidden_size is None or num_attention_heads is None:
+        raise AttributeError("Unable to infer head_dim from model config.")
+    return hidden_size // num_attention_heads
+
+
+def try_get_model_head_dim(pretrained: str) -> Optional[int]:
+    """Best-effort head_dim inference for config logging without loading model weights."""
+    try:
+        config = AutoConfig.from_pretrained(pretrained, trust_remote_code=True)
+    except Exception:
+        return None
+
+    try:
+        return _get_head_dim(config)
+    except AttributeError:
+        return None
+
+
+def _serialize_runtime_value(value):
+    """Convert runtime-only objects into JSON-friendly values."""
+    if isinstance(value, torch.dtype):
+        return str(value).replace("torch.", "")
+    if isinstance(value, torch.device):
+        return str(value)
+    return value
+
+
+def _resolve_linear_kernel_defs(
+    kernel_family: str,
+    num_anchors: int,
+    tau: float,
+) -> tuple[Optional[dict], Optional[dict], str]:
+    """Central source of truth for q/k kernel classes and fixed hyperparameters."""
+    family = kernel_family.lower()
+
+    if family == "softplus":
+        kernel_q_def = {
+            "class": PowTopkSoftplusKernel,
+            "class_name": "PowTopkSoftplusKernel",
+            "constructor_kwargs": {
+                "topk": 20,
+                "gamma": 5.0,
+                "normalize": True,
+            },
+        }
+        kernel_k_def = {
+            "class": GatedTopkSoftplusKernel,
+            "class_name": "GatedTopkSoftplusKernel",
+            "constructor_kwargs": {
+                "topk": None,
+            },
+        }
+        return kernel_q_def, kernel_k_def, family
+
+    if family == "niah":
+        kernel_q_def = {
+            "class": DenseQueryKernel,
+            "class_name": "DenseQueryKernel",
+            "constructor_kwargs": {
+                "topk": None,
+                "gamma": 2.0,
+                "normalize": True,
+            },
+        }
+        kernel_k_def = {
+            "class": PositionAwareKernel,
+            "class_name": "PositionAwareKernel",
+            "constructor_kwargs": {
+                "topk": None,
+            },
+        }
+        return kernel_q_def, kernel_k_def, family
+
+    if family == "anchor":
+        anchor_kwargs = {
+            "num_anchors": num_anchors,
+            "tau": tau,
+        }
+        kernel_q_def = {
+            "class": AnchorKernel,
+            "class_name": "AnchorKernel",
+            "constructor_kwargs": dict(anchor_kwargs),
+        }
+        kernel_k_def = {
+            "class": AnchorKernel,
+            "class_name": "AnchorKernel",
+            "constructor_kwargs": dict(anchor_kwargs),
+        }
+        return kernel_q_def, kernel_k_def, family
+
+    if family in {"none", "identity", "raw"}:
+        return None, None, family
+
+    raise ValueError(
+        f"Unsupported linear_kernel_family: {kernel_family}. "
+        "Expected one of: softplus, niah, anchor, none."
+    )
+
+
+def resolve_linear_kernel_specs(
+    kernel_family: str,
+    num_anchors: int,
+    tau: float,
+    *,
+    head_dim: Optional[int] = None,
+    device=None,
+    dtype=None,
+) -> tuple[dict, dict]:
+    """Return JSON-friendly specs for the effective q/k kernels."""
+    kernel_q_def, kernel_k_def, family = _resolve_linear_kernel_defs(
+        kernel_family=kernel_family,
+        num_anchors=num_anchors,
+        tau=tau,
+    )
+
+    shared_kwargs = {
+        "head_dim": head_dim,
+        "device": _serialize_runtime_value(device),
+        "dtype": _serialize_runtime_value(dtype),
+    }
+
+    def build_spec(role: str, kernel_def: Optional[dict]) -> dict:
+        if kernel_def is None:
+            return {
+                "role": role,
+                "family": family,
+                "class_name": None,
+                "constructor_kwargs": dict(shared_kwargs),
+            }
+
+        return {
+            "role": role,
+            "family": family,
+            "class_name": kernel_def["class_name"],
+            "constructor_kwargs": {
+                **shared_kwargs,
+                **{
+                    key: _serialize_runtime_value(value)
+                    for key, value in kernel_def["constructor_kwargs"].items()
+                },
+            },
+        }
+
+    return build_spec("q", kernel_q_def), build_spec("k", kernel_k_def)
+
+
+def _instantiate_linear_kernel(kernel_def: Optional[dict], head_dim: int, device, dtype):
+    """Instantiate a single linear-memory kernel from its resolved definition."""
+    if kernel_def is None:
+        return None
+
+    constructor_kwargs = {
+        "head_dim": head_dim,
+        **kernel_def["constructor_kwargs"],
+        "device": device,
+        "dtype": dtype,
+    }
+    return kernel_def["class"](**constructor_kwargs)
+
+
+def _build_linear_kernels(
+    kernel_family: str,
+    head_dim: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    num_anchors: int,
+    tau: float,
+):
+    """Build the q/k feature-map modules expected by hack_hf_swaa.py."""
+    kernel_q_def, kernel_k_def, _ = _resolve_linear_kernel_defs(
+        kernel_family=kernel_family,
+        num_anchors=num_anchors,
+        tau=tau,
+    )
+    kernel_q = _instantiate_linear_kernel(kernel_q_def, head_dim=head_dim, device=device, dtype=dtype)
+    kernel_k = _instantiate_linear_kernel(kernel_k_def, head_dim=head_dim, device=device, dtype=dtype)
+    return kernel_q, kernel_k
 
 
 @register_model("swaa_hf")
@@ -75,9 +323,12 @@ class SWAAHFLM(LM):
         flash_attn_weight: float = 0.9,
         linear_mem_weight: float = 0.1,
         linear_mem_mode: str = "fused_recurrent",
+        linear_mem_blend_mode: str = "raw",
+        linear_kernel_family: str = "softplus",
         # Anchor kernel configuration
         num_anchors: int = 64,
         tau: float = 20.0,
+        force_fa_decode_layers: Optional[List[int]] = None,
         # Generation config
         batch_size: Optional[int] = None,
         max_length: int = 4096,
@@ -88,21 +339,18 @@ class SWAAHFLM(LM):
         # Handle batch_size from kwargs (lm-eval may pass it)
         batch_size = batch_size or kwargs.pop("batch_size", 1)
 
-        # Parse non_sliding_layers from string if needed (lm-eval passes it as string)
-        if isinstance(non_sliding_layers, str):
-            import ast
-            try:
-                non_sliding_layers = ast.literal_eval(non_sliding_layers)
-            except (ValueError, SyntaxError):
-                non_sliding_layers = []
+        if isinstance(batch_size, str) and batch_size.isdigit():
+            batch_size = int(batch_size)
 
-        # Convert tuple to list (for hashability in metadata passing)
-        if isinstance(non_sliding_layers, tuple):
-            non_sliding_layers = list(non_sliding_layers)
+        non_sliding_layers = _parse_int_list(non_sliding_layers)
+        force_fa_decode_layers = _parse_int_list(force_fa_decode_layers)
+        force_fa_decode = _parse_force_fa_decode(force_fa_decode)
+        if force_fa_decode_layers:
+            force_fa_decode = force_fa_decode_layers
 
-        # Ensure non_sliding_layers is a list
-        if non_sliding_layers is None:
-            non_sliding_layers = []
+        enable_linear_mem = _parse_bool(enable_linear_mem)
+        num_anchors = int(num_anchors)
+        tau = float(tau)
 
         # Call parent init with batch_size
         super().__init__()
@@ -113,7 +361,7 @@ class SWAAHFLM(LM):
 
         # Device setup
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.torch_dtype = getattr(torch, torch_dtype)
+        self.torch_dtype = getattr(torch, torch_dtype) if isinstance(torch_dtype, str) else torch_dtype
         self.batch_size = batch_size
         self.max_length = max_length
         self.max_chunk_size = max_chunk_size
@@ -146,24 +394,34 @@ class SWAAHFLM(LM):
             enable_linear_mem=enable_linear_mem,
             flash_attn_weight=flash_attn_weight,
             linear_mem_weight=linear_mem_weight,
+            linear_mem_mode=linear_mem_mode,
+            linear_mem_blend_mode=linear_mem_blend_mode,
         )
         self.model.config.swaa_config = self.swaa_config
 
-
-        linear_kernel_k = GatedTopkSoftplusKernel(
-        head_dim=self.model.config.head_dim, topk=None,
-        device=self.device,
-        dtype = torch.bfloat16
-        )
-        linear_kernel_q = PowTopkSoftplusKernel(
-        head_dim=self.model.config.head_dim, topk=20, gamma = 5.0,
-        device=self.device,
-        dtype = torch.bfloat16,
-        normalize=True,
+        head_dim = _get_head_dim(self.model.config)
+        self.kernel_q_spec, self.kernel_k_spec = resolve_linear_kernel_specs(
+            kernel_family=linear_kernel_family,
+            num_anchors=num_anchors,
+            tau=tau,
+            head_dim=head_dim,
+            device=self.device,
+            dtype=self.torch_dtype,
         )
 
-        self.model.config.kernel_k = linear_kernel_k
+        if enable_linear_mem:
+            linear_kernel_q, linear_kernel_k = _build_linear_kernels(
+                kernel_family=linear_kernel_family,
+                head_dim=head_dim,
+                device=self.device,
+                dtype=self.torch_dtype,
+                num_anchors=num_anchors,
+                tau=tau,
+            )
+        else:
+            linear_kernel_q, linear_kernel_k = None, None
         self.model.config.kernel_q = linear_kernel_q
+        self.model.config.kernel_k = linear_kernel_k
 
 
         print(f"\n{'='*60}")
@@ -181,9 +439,14 @@ class SWAAHFLM(LM):
         print(f"  - flash_attn_weight: {flash_attn_weight}")
         print(f"  - linear_mem_weight: {linear_mem_weight}")
         print(f"  - linear_mem_mode: {linear_mem_mode}")
-        print(f"\nAnchor Kernel Configuration:")
+        print(f"  - linear_mem_blend_mode: {linear_mem_blend_mode}")
+        print(f"  - mark: {self.swaa_config.mark}")
+        print(f"\nLinear Kernel Configuration:")
+        print(f"  - linear_kernel_family: {linear_kernel_family}")
         print(f"  - num_anchors: {num_anchors}")
         print(f"  - tau: {tau}")
+        print(f"  - kernel_q: {self.kernel_q_spec}")
+        print(f"  - kernel_k: {self.kernel_k_spec}")
         print(f"{'='*60}\n")
 
         # Initialize fresh evaluation log
@@ -230,7 +493,7 @@ class SWAAHFLM(LM):
     def _model_generate(
         self,
         context: str,
-        max_new_tokens: int = 256,
+        max_new_tokens: int = 128,
         temperature: float = 1.0,
         top_p: float = 1.0,
     ) -> str:
@@ -447,16 +710,23 @@ def run_evaluation(
     batch_size: int = 1,
     device: str = "cuda:0",
     torch_dtype: str = "bfloat16",
+    attn_implementation: str = "flash_attention_2",
     num_fewshot: Optional[int] = None,
     limit: Optional[int] = None,
     # SWAA parameters
     sliding_window_size: int = 2048,
     keep_first: int = 4,
     force_fa_decode: bool = False,
+    force_fa_decode_layers: Optional[List[int]] = None,
     non_sliding_layers: Optional[List[int]] = None,
     enable_linear_mem: bool = True,
     flash_attn_weight: float = 0.9,
     linear_mem_weight: float = 0.1,
+    linear_mem_mode: str = "fused_recurrent",
+    linear_mem_blend_mode: str = "raw",
+    linear_kernel_family: str = "softplus",
+    num_anchors: int = 64,
+    tau: float = 20.0,
     **kwargs,
 ):
     """
@@ -504,14 +774,20 @@ def run_evaluation(
         "pretrained": model_path,
         "device": device,
         "torch_dtype": torch_dtype,
+        "attn_implementation": attn_implementation,
         "batch_size": batch_size,
         "sliding_window_size": sliding_window_size,
         "keep_first": keep_first,
-        "force_fa_decode": force_fa_decode,
+        "force_fa_decode": str(force_fa_decode_layers) if force_fa_decode_layers else force_fa_decode,
         "non_sliding_layers": str(non_sliding_layers or []),
         "enable_linear_mem": enable_linear_mem,
         "flash_attn_weight": flash_attn_weight,
         "linear_mem_weight": linear_mem_weight,
+        "linear_mem_mode": linear_mem_mode,
+        "linear_mem_blend_mode": linear_mem_blend_mode,
+        "linear_kernel_family": linear_kernel_family,
+        "num_anchors": num_anchors,
+        "tau": tau,
     }
 
     # Run evaluation with log_samples=True to save detailed results
@@ -639,6 +915,13 @@ Output Files:
         help="Torch dtype for model (default: bfloat16)"
     )
     parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="flash_attention_2",
+        choices=["flash_attention_2", "eager", "sdpa"],
+        help="Attention implementation (default: flash_attention_2)"
+    )
+    parser.add_argument(
         "--num_fewshot",
         type=int,
         default=None,
@@ -670,6 +953,13 @@ Output Files:
         help="Force flash attention during decoding"
     )
     parser.add_argument(
+        "--force_fa_decode_layers",
+        type=int,
+        nargs="*",
+        default=None,
+        help="Specific layers that should force full-attention decode"
+    )
+    parser.add_argument(
         "--non_sliding_layers",
         type=int,
         nargs="*",
@@ -678,9 +968,16 @@ Output Files:
     )
     parser.add_argument(
         "--enable_linear_mem",
+        dest="enable_linear_mem",
         action="store_true",
-        default=True,
         help="Enable linear memory mechanism (default: True)"
+    )
+    parser.add_argument(
+        "--disable_linear_mem",
+        "--no_linear_mem",
+        dest="enable_linear_mem",
+        action="store_false",
+        help="Disable linear memory mechanism"
     )
     parser.add_argument(
         "--flash_attn_weight",
@@ -694,6 +991,41 @@ Output Files:
         default=0.1,
         help="Linear memory weight (default: 0.1)"
     )
+    parser.add_argument(
+        "--linear_mem_mode",
+        type=str,
+        default="fused_recurrent",
+        choices=["fused_recurrent", "fused_chunk", "chunk"],
+        help="Linear memory execution mode (default: fused_recurrent)"
+    )
+    parser.add_argument(
+        "--linear_mem_blend_mode",
+        type=str,
+        default="raw",
+        choices=["raw", "centered", "orth", "orth_match"],
+        help="How to blend linear memory with flash attention (default: raw)"
+    )
+    parser.add_argument(
+        "--linear_kernel_family",
+        type=str,
+        default="softplus",
+        choices=["softplus", "niah", "anchor", "none"],
+        help="Kernel family used by hack_hf_swaa linear memory (default: softplus)"
+    )
+    parser.add_argument(
+        "--num_anchors",
+        type=int,
+        default=64,
+        help="Number of anchors when linear_kernel_family=anchor (default: 64)"
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=20.0,
+        help="Anchor kernel temperature when linear_kernel_family=anchor (default: 20.0)"
+    )
+
+    parser.set_defaults(enable_linear_mem=True)
 
     args = parser.parse_args()
 
@@ -705,15 +1037,22 @@ Output Files:
         batch_size=args.batch_size,
         device=args.device,
         torch_dtype=args.torch_dtype,
+        attn_implementation=args.attn_implementation,
         num_fewshot=args.num_fewshot,
         limit=args.limit,
         sliding_window_size=args.sliding_window_size,
         keep_first=args.keep_first,
         force_fa_decode=args.force_fa_decode,
+        force_fa_decode_layers=args.force_fa_decode_layers,
         non_sliding_layers=args.non_sliding_layers,
         enable_linear_mem=args.enable_linear_mem,
         flash_attn_weight=args.flash_attn_weight,
         linear_mem_weight=args.linear_mem_weight,
+        linear_mem_mode=args.linear_mem_mode,
+        linear_mem_blend_mode=args.linear_mem_blend_mode,
+        linear_kernel_family=args.linear_kernel_family,
+        num_anchors=args.num_anchors,
+        tau=args.tau,
     )
 
 

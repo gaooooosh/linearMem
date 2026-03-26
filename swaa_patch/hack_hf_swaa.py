@@ -322,6 +322,15 @@ def linear_mem_ops(
         o = rearrange(o, 'b t h d -> b t (h d)')
         return o, recurrent_state
 
+def mem_proj(o_base: torch.Tensor, o_mem: torch.Tensor,eps = 1e-6) -> torch.Tensor:
+        # 投影系数
+        denom = (o_base * o_base).sum(dim=-1, keepdim=True).clamp_min(eps)
+        coeff = (o_mem * o_base).sum(dim=-1, keepdim=True) / denom
+
+        proj = coeff * o_base
+        delta_mem = o_mem - proj
+        return delta_mem
+
 def blend_linear_output(
     o_base: torch.Tensor,
     o_mem: torch.Tensor,
