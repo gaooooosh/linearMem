@@ -122,6 +122,29 @@ def _parse_force_fa_decode(value) -> bool | List[int]:
     return bool(value)
 
 
+def _normalize_stop_sequences(value) -> List[str]:
+    """Normalize lm-eval/HF stop specifications into a flat string list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item)]
+    return [str(value)]
+
+
+def _coerce_gen_kwargs(value) -> dict:
+    """
+    lm-eval passes generate_until requests as `(context, gen_kwargs)`.
+    Older local callers may still pass `(context, until)`, so keep that path working.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {"until": value}
+
+
 def _get_head_dim(config) -> int:
     """Infer head_dim for configs that do not expose it directly."""
     head_dim = getattr(config, "head_dim", None)
@@ -688,7 +711,7 @@ class SWAAHFLM(LM):
         Generate text until stopping criteria.
 
         Args:
-            requests: List of Instance objects with arguments = (context, until)
+            requests: List of Instance objects with arguments = (context, gen_kwargs)
 
         Returns:
             List of generated texts
@@ -698,49 +721,68 @@ class SWAAHFLM(LM):
         pbar = tqdm(enumerate(requests), total=len(requests), desc="generate_until", leave=True)
         for idx, request in pbar:
             # Extract arguments from Instance object
-            context, until = request.arguments
+            context, generation_spec = request.arguments
+            gen_kwargs = _coerce_gen_kwargs(generation_spec)
 
             # Tokenize context
             inputs = self.tokenizer(context, return_tensors="pt").to(self.device)
             input_len = inputs["input_ids"].shape[1]
 
-            # Prepare stopping criteria
-            if isinstance(until, str):
-                until = [until]
+            until = _normalize_stop_sequences(gen_kwargs.pop("until", None))
+            max_new_tokens = int(gen_kwargs.pop("max_gen_toks", gen_kwargs.pop("max_new_tokens", 256)))
+            do_sample = _parse_bool(gen_kwargs.pop("do_sample", False))
+            temperature = float(gen_kwargs.pop("temperature", 1.0))
+            top_p = float(gen_kwargs.pop("top_p", 1.0))
+            num_beams = int(gen_kwargs.pop("num_beams", 1))
+            gen_kwargs.pop("stop_strings", None)
+            gen_kwargs.pop("tokenizer", None)
+            gen_kwargs.pop("past_key_values", None)
+            gen_kwargs.pop("pad_token_id", None)
+
+            generate_kwargs = dict(gen_kwargs)
+            generate_kwargs.update(
+                {
+                    "max_new_tokens": max_new_tokens,
+                    "do_sample": do_sample,
+                    "num_beams": num_beams,
+                    "pad_token_id": self.tokenizer.eos_token_id,
+                    "past_key_values": self._create_cache(),
+                    "stop_strings": until if until else None,
+                    "tokenizer": self.tokenizer,
+                }
+            )
+            if do_sample:
+                generate_kwargs["temperature"] = temperature
+                generate_kwargs["top_p"] = top_p
 
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=256,
-                    do_sample=False,
-                    num_beams=1,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    past_key_values=self._create_cache(),
-                    stop_strings=until if until else None,
-                    tokenizer=self.tokenizer,
+                    **generate_kwargs,
                 )
 
-            generated = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-            # Remove context from generated text
-            if generated.startswith(context):
-                generated = generated[len(context) :].strip()
+            generated_tokens = outputs[0, input_len:]
+            generated = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
             # Apply stopping criteria
             for stop in until:
-                if stop in generated:
+                if stop and stop in generated:
                     generated = generated.split(stop)[0].strip()
 
             results.append(generated)
 
             # Log sample
-            output_len = outputs.shape[1] - input_len
+            output_len = generated_tokens.shape[0]
             _log_sample(
                 method="generate_until",
                 idx=idx,
                 input_len=input_len,
                 output=generated,
-                extra_info=f"Output Length: {output_len} tokens | Stop: {until}"
+                extra_info=(
+                    f"Output Length: {output_len} tokens | Stop: {until} | "
+                    f"Gen kwargs: max_new_tokens={max_new_tokens}, do_sample={do_sample}, "
+                    f"temperature={temperature if do_sample else 'n/a'}, top_p={top_p if do_sample else 'n/a'}"
+                )
             )
 
         return results
