@@ -15,3 +15,4 @@ experiments/*
 reaserch_report/*
 eval/scripts/__pycache__/*
 swaa_patch/__pycache__/*
+experiments/2026-03-30/meta/session_summary.json
