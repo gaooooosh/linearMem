@@ -11,6 +11,8 @@ import sys
 import json
 import ast
 import argparse
+import importlib
+import inspect
 from pathlib import Path
 
 # Add project root to sys.path for importing swaa_patch
@@ -42,6 +44,7 @@ _REQUIRED_SWAA_CACHE_METHODS = (
     "is_linear_k_sum_state_initialized",
     "get_linear_k_sum_state",
 )
+_ORIG_SWAA_BLEND_LINEAR_OUTPUT = None
 
 
 def _init_log_file():
@@ -104,6 +107,48 @@ def _parse_int_list(value) -> List[int]:
     raise TypeError(f"Unsupported list value type: {type(value)!r}")
 
 
+def _parse_float_dict(value) -> dict[int, float]:
+    """Parse {layer: beta} maps from dicts, Python literals, or k:v CSV strings."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {int(key): float(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        out = {}
+        for item in value:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise TypeError(f"Unsupported beta_by_layer entry: {item!r}")
+            out[int(item[0])] = float(item[1])
+        return out
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return {}
+        try:
+            parsed = ast.literal_eval(stripped)
+        except (ValueError, SyntaxError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            return {int(key): float(val) for key, val in parsed.items()}
+        if isinstance(parsed, (list, tuple)):
+            return _parse_float_dict(parsed)
+
+        out = {}
+        for piece in stripped.split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            if ":" not in piece:
+                raise ValueError(
+                    "beta_by_layer must look like '0:0.08,18:0.16' or '{0: 0.08, 18: 0.16}'"
+                )
+            key, val = piece.split(":", 1)
+            out[int(key.strip())] = float(val.strip())
+        return out
+    raise TypeError(f"Unsupported beta_by_layer type: {type(value)!r}")
+
+
 def _parse_force_fa_decode(value) -> bool | List[int]:
     """
     force_fa_decode supports either a global bool or a per-layer list in SWAAConfig.
@@ -120,6 +165,64 @@ def _parse_force_fa_decode(value) -> bool | List[int]:
         parsed = _parse_int_list(value)
         return parsed if parsed else False
     return bool(value)
+
+
+def _current_self_attn():
+    """Best-effort lookup of the current attention module from the Python stack."""
+    frame = inspect.currentframe()
+    try:
+        caller = frame.f_back if frame is not None else None
+        while caller is not None:
+            self_obj = caller.f_locals.get("self")
+            if self_obj is not None and hasattr(self_obj, "layer_idx"):
+                return self_obj
+            caller = caller.f_back
+        return None
+    finally:
+        del frame
+
+
+def _norm_match_mem(o_base: torch.Tensor, o_mem: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    base_f = o_base.float()
+    mem_f = o_mem.float()
+    base_norm = base_f.norm(dim=-1, keepdim=True).clamp_min(eps)
+    mem_norm = mem_f.norm(dim=-1, keepdim=True).clamp_min(eps)
+    return mem_f * (base_norm / mem_norm)
+
+
+def make_layer_beta_blend(
+    *,
+    beta: float | None,
+    beta_by_layer: dict[int, float] | None,
+    boundary: int,
+):
+    default_beta = float(beta or 0.0)
+    beta_map = {int(k): float(v) for k, v in (beta_by_layer or {}).items()}
+
+    def resolve_beta(layer_idx: int) -> float:
+        if beta_map:
+            return float(beta_map.get(layer_idx, 0.0))
+        return default_beta
+
+    def blend(o_base, o_mem, *, layer_idx: int):
+        layer_beta = resolve_beta(layer_idx)
+        if layer_beta <= 0.0:
+            return o_base
+
+        base_f = o_base.float()
+        mem_f = o_mem.float()
+        seq_len = base_f.shape[-2] if base_f.ndim == 3 else 1
+        if seq_len > 1:
+            positions = torch.arange(seq_len, device=base_f.device).float()
+            gate = (positions >= boundary).float()
+            gate = gate.view(1, seq_len, 1) if base_f.ndim == 3 else gate.view(seq_len, 1)
+        else:
+            gate = 1.0
+
+        mem_scaled = _norm_match_mem(base_f, mem_f)
+        return (base_f + layer_beta * gate * mem_scaled).to(o_base.dtype)
+
+    return blend
 
 
 def _normalize_stop_sequences(value) -> List[str]:
@@ -380,6 +483,8 @@ class SWAAHFLM(LM):
         linear_mem_mode: str = "fused_recurrent",
         linear_mem_blend_mode: str = "raw",
         linear_kernel_family: str = "softplus",
+        active_layers: Optional[List[int] | str] = None,
+        beta_by_layer: Optional[dict | str] = None,
         # Anchor kernel configuration
         num_anchors: int = 64,
         tau: float = 20.0,
@@ -402,6 +507,10 @@ class SWAAHFLM(LM):
         force_fa_decode = _parse_force_fa_decode(force_fa_decode)
         if force_fa_decode_layers:
             force_fa_decode = force_fa_decode_layers
+        active_layers = _parse_int_list(active_layers)
+        beta_by_layer = _parse_float_dict(beta_by_layer)
+        if not active_layers and beta_by_layer:
+            active_layers = sorted(beta_by_layer)
 
         enable_linear_mem = _parse_bool(enable_linear_mem)
         num_anchors = int(num_anchors)
@@ -454,6 +563,16 @@ class SWAAHFLM(LM):
             linear_mem_blend_mode=linear_mem_blend_mode,
         )
         self.model.config.swaa_config = self.swaa_config
+        self.active_layers = list(active_layers)
+        self.beta_by_layer = dict(beta_by_layer)
+        self._install_layer_selective_linear_mem(
+            enable_linear_mem=enable_linear_mem,
+            active_layers=self.active_layers,
+            beta=linear_mem_weight,
+            beta_by_layer=self.beta_by_layer,
+            sliding_window_size=sliding_window_size,
+            keep_first=keep_first,
+        )
 
         head_dim = _get_head_dim(self.model.config)
         self.kernel_q_spec, self.kernel_k_spec = resolve_linear_kernel_specs(
@@ -496,6 +615,8 @@ class SWAAHFLM(LM):
         print(f"  - linear_mem_weight: {linear_mem_weight}")
         print(f"  - linear_mem_mode: {linear_mem_mode}")
         print(f"  - linear_mem_blend_mode: {linear_mem_blend_mode}")
+        print(f"  - active_layers: {self.active_layers}")
+        print(f"  - beta_by_layer: {self.beta_by_layer}")
         print(f"  - decode_norm_correction: {self.swaa_runtime['decode_norm_correction']}")
         print(f"  - decode_norm_state_key: {self.swaa_runtime['decode_norm_state_key']}")
         print(f"  - decode_norm_scope: {self.swaa_runtime['decode_norm_scope']}")
@@ -510,6 +631,79 @@ class SWAAHFLM(LM):
 
         # Initialize fresh evaluation log
         _init_log_file()
+
+    def _install_layer_selective_linear_mem(
+        self,
+        *,
+        enable_linear_mem: bool,
+        active_layers: List[int],
+        beta: float,
+        beta_by_layer: dict[int, float],
+        sliding_window_size: int,
+        keep_first: int,
+    ) -> None:
+        global _ORIG_SWAA_BLEND_LINEAR_OUTPUT
+
+        swaa_mod = importlib.import_module("swaa_patch.hack_hf_swaa")
+        if _ORIG_SWAA_BLEND_LINEAR_OUTPUT is None:
+            _ORIG_SWAA_BLEND_LINEAR_OUTPUT = swaa_mod.blend_linear_output
+        else:
+            swaa_mod.blend_linear_output = _ORIG_SWAA_BLEND_LINEAR_OUTPUT
+
+        if not enable_linear_mem:
+            return
+
+        active_set = set(int(layer_idx) for layer_idx in active_layers) if active_layers else None
+        beta_map = {int(k): float(v) for k, v in beta_by_layer.items()}
+        if active_set is None and not beta_map:
+            return
+
+        boundary = sliding_window_size + keep_first
+        custom_blend = make_layer_beta_blend(
+            beta=beta,
+            beta_by_layer=beta_map,
+            boundary=boundary,
+        )
+
+        def patched_blend(
+            o_base,
+            o_mem,
+            flash_attn_weight=1.0,
+            linear_mem_weight=0.1,
+            blend_mode="raw",
+            eps=1e-6,
+        ):
+            del flash_attn_weight, linear_mem_weight, blend_mode, eps
+            self_attn = _current_self_attn()
+            layer_idx = int(self_attn.layer_idx) if self_attn is not None and hasattr(self_attn, "layer_idx") else -1
+            return custom_blend(o_base, o_mem, layer_idx=layer_idx)
+
+        swaa_mod.blend_linear_output = patched_blend
+
+        if active_set is None:
+            return
+
+        for layer_idx, decoder_layer in enumerate(self.model.model.layers):
+            attn = decoder_layer.self_attn
+            orig_forward = attn.forward
+
+            def layer_forward(
+                *args,
+                __orig=orig_forward,
+                __attn=attn,
+                __layer_idx=layer_idx,
+                **kwargs,
+            ):
+                if __layer_idx not in active_set:
+                    prev = __attn.config.swaa_config.enable_linear_mem
+                    __attn.config.swaa_config.enable_linear_mem = False
+                    try:
+                        return __orig(*args, **kwargs)
+                    finally:
+                        __attn.config.swaa_config.enable_linear_mem = prev
+                return __orig(*args, **kwargs)
+
+            attn.forward = layer_forward
 
     def tok_encode(self, string: str) -> List[int]:
         """Encode string to token ids."""
@@ -810,6 +1004,8 @@ def run_evaluation(
     linear_mem_mode: str = "fused_recurrent",
     linear_mem_blend_mode: str = "raw",
     linear_kernel_family: str = "softplus",
+    active_layers: Optional[List[int] | str] = None,
+    beta_by_layer: Optional[dict | str] = None,
     num_anchors: int = 64,
     tau: float = 20.0,
     **kwargs,
@@ -875,6 +1071,8 @@ def run_evaluation(
         "linear_mem_mode": linear_mem_mode,
         "linear_mem_blend_mode": linear_mem_blend_mode,
         "linear_kernel_family": linear_kernel_family,
+        "active_layers": str(active_layers) if active_layers is not None else "",
+        "beta_by_layer": json.dumps(beta_by_layer, ensure_ascii=False, sort_keys=True) if beta_by_layer else "",
         "num_anchors": num_anchors,
         "tau": tau,
     }
@@ -1102,6 +1300,18 @@ Output Files:
         help="How to blend linear memory with flash attention (default: raw)"
     )
     parser.add_argument(
+        "--active_layers",
+        type=str,
+        default="",
+        help="Comma-separated active layer indices for layer-selective linear memory (default: all layers)"
+    )
+    parser.add_argument(
+        "--beta_by_layer",
+        type=str,
+        default="",
+        help="Per-layer beta map, e.g. '0:0.08,18:0.16' or '{0:0.08,18:0.16}'"
+    )
+    parser.add_argument(
         "--linear_kernel_family",
         type=str,
         default="softplus",
@@ -1147,6 +1357,8 @@ Output Files:
         linear_mem_mode=args.linear_mem_mode,
         linear_mem_blend_mode=args.linear_mem_blend_mode,
         linear_kernel_family=args.linear_kernel_family,
+        active_layers=args.active_layers,
+        beta_by_layer=args.beta_by_layer,
         num_anchors=args.num_anchors,
         tau=args.tau,
     )

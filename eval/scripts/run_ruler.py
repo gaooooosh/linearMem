@@ -56,6 +56,33 @@ RULER_TASKS = [
 ]
 
 
+def parse_float_dict(value: str) -> dict[int, float]:
+    if not value:
+        return {}
+    stripped = value.strip()
+    if not stripped:
+        return {}
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return {int(key): float(val) for key, val in parsed.items()}
+
+    out = {}
+    for piece in stripped.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if ":" not in piece:
+            raise ValueError(
+                "beta-by-layer must look like '0:0.08,18:0.16' or '{\"0\": 0.08, \"18\": 0.16}'"
+            )
+        key, val = piece.split(":", 1)
+        out[int(key.strip())] = float(val.strip())
+    return out
+
+
 def run_ruler_evaluation(args):
     """Run RULER evaluation with full configuration tracking."""
     print("\n" + "=" * 80)
@@ -79,6 +106,8 @@ def run_ruler_evaluation(args):
         "linear_mem_mode": args.linear_mem_mode,
         "linear_mem_blend_mode": args.linear_mem_blend_mode,
         "linear_kernel_family": args.linear_kernel_family,
+        "active_layers": str(list(args.active_layers)) if args.active_layers else "",
+        "beta_by_layer": json.dumps(args.beta_by_layer, ensure_ascii=False, sort_keys=True) if args.beta_by_layer else "",
         "num_anchors": args.num_anchors,
         "tau": args.tau,
     }
@@ -100,6 +129,8 @@ def run_ruler_evaluation(args):
         "linear_mem_weight": args.linear_mem_weight,
         "linear_mem_mode": args.linear_mem_mode,
         "linear_mem_blend_mode": args.linear_mem_blend_mode,
+        "active_layers": list(args.active_layers),
+        "beta_by_layer": args.beta_by_layer,
     }
 
     # 构建完整配置
@@ -115,6 +146,8 @@ def run_ruler_evaluation(args):
         "linear_mem_mode": args.linear_mem_mode,
         "linear_mem_blend_mode": args.linear_mem_blend_mode,
         "linear_kernel_family": args.linear_kernel_family,
+        "active_layers": list(args.active_layers),
+        "beta_by_layer": args.beta_by_layer,
         "num_anchors": args.num_anchors,
         "tau": args.tau,
         "device": args.device,
@@ -146,6 +179,8 @@ def run_ruler_evaluation(args):
     print(f"  Linear Memory权重: {config['linear_mem_weight']}")
     print(f"  Linear Memory模式: {config['linear_mem_mode']}")
     print(f"  Linear Memory融合方式: {config['linear_mem_blend_mode']}")
+    print(f"  Active Layers: {config['active_layers']}")
+    print(f"  Beta by Layer: {config['beta_by_layer']}")
     print(f"  Linear Kernel族: {config['linear_kernel_family']}")
     print(f"  Anchor数量: {config['num_anchors']}")
     print(f"  Anchor温度参数: {config['tau']}")
@@ -335,6 +370,8 @@ def generate_report(results: dict, output_dir: Path, config: dict):
         f.write(f"| Linear Memory权重 | {config['linear_mem_weight']} |\n")
         f.write(f"| Linear Memory模式 | {config['linear_mem_mode']} |\n")
         f.write(f"| Linear Memory融合方式 | {config['linear_mem_blend_mode']} |\n")
+        f.write(f"| Active Layers | {config['active_layers']} |\n")
+        f.write(f"| Beta by Layer | {config['beta_by_layer']} |\n")
         f.write(f"| Linear Kernel族 | {config['linear_kernel_family']} |\n")
         f.write(f"| Anchor数量 | {config['num_anchors']} |\n")
         f.write(f"| Anchor温度参数 | {config['tau']} |\n")
@@ -590,6 +627,18 @@ def main():
         help="Linear Memory 与 flash attention 的融合方式 (默认: raw)",
     )
     parser.add_argument(
+        "--active-layers",
+        type=str,
+        default="",
+        help="启用 layer-selective linear memory 的层索引，逗号分隔 (如: 0,18)",
+    )
+    parser.add_argument(
+        "--beta-by-layer",
+        type=str,
+        default="",
+        help="逐层 beta 映射，如 0:0.08,18:0.16 或 JSON 字典",
+    )
+    parser.add_argument(
         "--linear-kernel-family",
         type=str,
         default="softplus",
@@ -627,6 +676,13 @@ def main():
         args.non_sliding_layers = tuple(int(x.strip()) for x in args.non_sliding_layers.split(",") if x.strip())
     else:
         args.non_sliding_layers = tuple()  # 使用空元组而不是空列表
+
+    if args.active_layers:
+        args.active_layers = tuple(int(x.strip()) for x in args.active_layers.split(",") if x.strip())
+    else:
+        args.active_layers = tuple()
+
+    args.beta_by_layer = parse_float_dict(args.beta_by_layer)
 
     # 运行评测
     run_ruler_evaluation(args)
