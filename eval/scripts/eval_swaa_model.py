@@ -1057,10 +1057,8 @@ def run_evaluation(
     # Build model arguments
     model_args = {
         "pretrained": model_path,
-        "device": device,
         "torch_dtype": torch_dtype,
         "attn_implementation": attn_implementation,
-        "batch_size": batch_size,
         "sliding_window_size": sliding_window_size,
         "keep_first": keep_first,
         "force_fa_decode": str(force_fa_decode_layers) if force_fa_decode_layers else force_fa_decode,
